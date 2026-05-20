@@ -1,0 +1,285 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+}
+
+:root {
+  --accent-color-light: #2563eb;
+  --accent-color-dark-mode: #5983dd;
+  --accent-color: var(--accent-color-light);
+  --accent-color-dark: color-mix(in srgb, var(--accent-color-light) 86%, black);
+  --accent-color-soft: color-mix(in srgb, var(--accent-color-light) 12%, white);
+  --accent-color-soft-strong: color-mix(in srgb, var(--accent-color-light) 20%, white);
+  --accent-color-soft-dark: color-mix(in srgb, var(--accent-color-dark-mode) 18%, transparent);
+  --accent-color-border-soft: color-mix(in srgb, var(--accent-color-light) 30%, white);
+  --accent-color-text-soft: color-mix(in srgb, var(--accent-color-dark-mode) 86%, white);
+  --accent-color-text-strong: color-mix(in srgb, var(--accent-color-light) 76%, black);
+  --accent-color-shadow: color-mix(in srgb, var(--accent-color-light) 18%, transparent);
+}
+
+.dark {
+  --accent-color: var(--accent-color-dark-mode);
+  --accent-color-dark: color-mix(in srgb, var(--accent-color-dark-mode) 82%, black);
+  --accent-color-soft: color-mix(in srgb, var(--accent-color-dark-mode) 13%, transparent);
+  --accent-color-soft-strong: color-mix(in srgb, var(--accent-color-dark-mode) 22%, transparent);
+  --accent-color-border-soft: color-mix(in srgb, var(--accent-color-dark-mode) 36%, transparent);
+  --accent-color-text-strong: color-mix(in srgb, var(--accent-color-dark-mode) 88%, white);
+  --accent-color-shadow: color-mix(in srgb, var(--accent-color-dark-mode) 18%, transparent);
+}
+
+.text-accent {
+  color: var(--accent-color);
+}
+
+.bg-accent {
+  background-color: var(--accent-color);
+}
+
+.border-accent {
+  border-color: var(--accent-color);
+}
+
+.ring-accent {
+  --tw-ring-color: var(--accent-color);
+}
+
+.hover\:text-accent:hover {
+  color: var(--accent-color);
+}
+
+.hover\:bg-accent:hover {
+  background-color: var(--accent-color);
+}
+
+.hover\:border-accent:hover {
+  border-color: var(--accent-color);
+}
+
+.focus\:border-accent:focus {
+  border-color: var(--accent-color);
+}
+
+.focus\:ring-accent:focus {
+  --tw-ring-color: var(--accent-color);
+}
+
+.text-accent-strong {
+  color: var(--accent-color-text-strong);
+}
+
+.text-accent-soft {
+  color: var(--accent-color-text-soft);
+}
+
+.bg-accent-soft {
+  background-color: var(--accent-color-soft);
+}
+
+.bg-accent-soft-strong {
+  background-color: var(--accent-color-soft-strong);
+}
+
+.bg-accent-soft-dark {
+  background-color: var(--accent-color-soft-dark);
+}
+
+.border-accent-soft {
+  border-color: var(--accent-color-border-soft);
+}
+
+.hover\:bg-accent-dark:hover {
+  background-color: var(--accent-color-dark);
+}
+
+.hover\:bg-accent-soft:hover {
+  background-color: var(--accent-color-soft);
+}
+
+.hover\:text-accent-strong:hover {
+  color: var(--accent-color-text-strong);
+}
+
+.hover\:border-accent-soft:hover {
+  border-color: var(--accent-color-border-soft);
+}
+
+.shadow-accent-soft {
+  --tw-shadow-color: var(--accent-color-shadow);
+  --tw-shadow: 0 10px 30px var(--tw-shadow-color);
+  box-shadow: var(--tw-shadow);
+}
+
+.accent-file::file-selector-button {
+  background-color: var(--accent-color);
+  color: white;
+}
+
+/* =========================
+   AI Markdown / Table Design
+   ========================= */
+
+.assistant-markdown {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  font-size: 0.875rem;
+  line-height: 1.75rem;
+}
+
+.assistant-markdown p {
+  margin: 0.75rem 0;
+}
+
+.assistant-markdown p:first-child {
+  margin-top: 0;
+}
+
+.assistant-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.assistant-markdown strong {
+  font-weight: 700;
+  color: var(--accent-color-text-strong);
+}
+
+.dark .assistant-markdown strong {
+  color: var(--accent-color-text-soft);
+}
+
+.assistant-markdown ul {
+  margin: 0.75rem 0;
+  padding-left: 1.25rem;
+  list-style-type: disc;
+}
+
+.assistant-markdown ol {
+  margin: 0.75rem 0;
+  padding-left: 1.25rem;
+  list-style-type: decimal;
+}
+
+.assistant-markdown li {
+  margin: 0.25rem 0;
+}
+
+.assistant-markdown h1,
+.assistant-markdown h2,
+.assistant-markdown h3,
+.assistant-markdown h4 {
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #0f172a;
+}
+
+.dark .assistant-markdown h1,
+.dark .assistant-markdown h2,
+.dark .assistant-markdown h3,
+.dark .assistant-markdown h4 {
+  color: #f8fafc;
+}
+
+.assistant-markdown h1 {
+  font-size: 1.25rem;
+}
+
+.assistant-markdown h2 {
+  font-size: 1.125rem;
+}
+
+.assistant-markdown h3,
+.assistant-markdown h4 {
+  font-size: 1rem;
+}
+
+/* Table wrapper behavior */
+.assistant-markdown table {
+  width: 100%;
+  min-width: 520px;
+  margin: 1rem 0;
+  border-collapse: collapse;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.assistant-markdown th,
+.assistant-markdown td {
+  border: 1px solid #cbd5e1;
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+}
+
+.assistant-markdown th {
+  background-color: #e2e8f0;
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.assistant-markdown td {
+  background-color: #ffffff;
+  color: #334155;
+}
+
+.dark .assistant-markdown table {
+  border-color: #334155;
+}
+
+.dark .assistant-markdown th,
+.dark .assistant-markdown td {
+  border-color: #334155;
+}
+
+.dark .assistant-markdown th {
+  background-color: #1e293b;
+  color: #bfdbfe;
+}
+
+.dark .assistant-markdown td {
+  background-color: #0f172a;
+  color: #e5e7eb;
+}
+
+/* Inline code */
+.assistant-markdown code {
+  border-radius: 6px;
+  background-color: #e2e8f0;
+  padding: 2px 6px;
+  font-family: monospace;
+  font-size: 0.9em;
+  color: #0f172a;
+}
+
+.dark .assistant-markdown code {
+  background-color: #1e293b;
+  color: #f8fafc;
+}
+
+/* Code blocks */
+.assistant-markdown pre {
+  overflow-x: auto;
+  border-radius: 12px;
+  background-color: #0f172a;
+  padding: 1rem;
+  color: #f8fafc;
+}
+
+.assistant-markdown pre code {
+  background-color: transparent;
+  padding: 0;
+  color: inherit;
+}

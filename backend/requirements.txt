@@ -1,0 +1,29 @@
+# pdfplumber
+# streamlit
+# sentence-transformers
+# chromadb
+# requests
+# fastapi[all]
+# groq
+
+pdfplumber
+# streamlit
+sentence-transformers
+chromadb
+requests
+fastapi[all]
+email-validator
+groq
+python-dotenv
+pandas
+openpyxl
+xlrd
+pypdf
+docx2txt
+unstructured
+langchain-core
+langchain-community
+langchain-text-splitters
+langchain-chroma
+# langchain-openai
+pytesseract
