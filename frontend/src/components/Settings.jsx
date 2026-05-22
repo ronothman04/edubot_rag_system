@@ -335,7 +335,7 @@ export default function Settings({ setCurrentView, user }) {
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                {/* <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
                   New Password
                 </label>
 
@@ -347,7 +347,7 @@ export default function Settings({ setCurrentView, user }) {
                     setProfile({ ...profile, password: e.target.value })
                   }
                   className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-accent focus:ring-4 focus:ring-accent dark:border-gray-700 dark:bg-gray-900 dark:text-white"
-                />
+                /> */}
               </div>
             </div>
 
@@ -447,26 +447,7 @@ export default function Settings({ setCurrentView, user }) {
           </div>
         </div>
 
-        {/* Admin Danger Zone */}
-        {isAdmin && (
-          <div className="rounded-[28px] border border-red-200 bg-white p-6 shadow-sm dark:border-red-900/50 dark:bg-gray-800">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h3 className="text-lg font-bold text-red-600">
-                  Danger Zone
-                </h3>
-
-                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                  Irreversible and sensitive admin actions.
-                </p>
-              </div>
-
-              <button className="rounded-2xl border border-red-300 px-5 py-3 text-sm font-semibold text-red-600 transition hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-950/30">
-                Clear All Data
-              </button>
-            </div>
-          </div>
-        )}
+     
 
         
       </div>

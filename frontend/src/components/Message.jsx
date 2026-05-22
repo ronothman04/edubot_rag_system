@@ -251,6 +251,9 @@ function Message({
   onEdit,
   onStartEdit,
   onCancelEdit,
+  onSuggestedQuestion,
+  fallbackSuggestedQuestions = [],
+  fallbackSuggestionTopic = null,
 }) {
   const isUser = msg.role === "user";
 
@@ -260,6 +263,29 @@ function Message({
     msg.response_type !== "homework_refusal" &&
     Array.isArray(msg.sources) &&
     msg.sources.length > 0;
+
+  const messageSuggestions = Array.isArray(msg.suggested_questions)
+    ? msg.suggested_questions
+    : [];
+  const suggestedQuestions = (messageSuggestions.length
+    ? messageSuggestions
+    : fallbackSuggestedQuestions
+  )
+    .map((question) => String(question || "").trim())
+    .filter(Boolean)
+    .slice(0, 3);
+
+  const shouldShowSuggestions = !isUser && suggestedQuestions.length > 0;
+  const suggestionTopic =
+    typeof msg.suggestion_topic === "string" && msg.suggestion_topic.trim()
+      ? msg.suggestion_topic.trim()
+      : typeof fallbackSuggestionTopic === "string" && fallbackSuggestionTopic.trim()
+        ? fallbackSuggestionTopic.trim()
+        : null;
+  const suggestionLabel =
+    suggestionTopic
+      ? `Did you mean ${suggestionTopic}?`
+      : "Did you mean one of these?";
 
   const [draft, setDraft] = useState(msg.content);
   const [copied, setCopied] = useState(false);
@@ -457,6 +483,29 @@ function Message({
                 })()}
               </ul>
             </details>
+          </div>
+        )}
+
+        {/* Suggested questions for unanswered prompts */}
+        {shouldShowSuggestions && (
+          <div className="mt-2 w-full max-w-full rounded-2xl border border-accent-soft bg-accent-soft/40 px-3 py-3 text-sm dark:border-accent-soft-dark dark:bg-accent-soft-dark/20">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-accent-strong dark:text-accent-soft">
+              {suggestionLabel}
+            </p>
+
+            <div className="flex flex-col gap-2">
+              {suggestedQuestions.map((question, index) => (
+                <button
+                  key={`${question}-${index}`}
+                  type="button"
+                  onClick={() => onSuggestedQuestion?.(question)}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-[13px] leading-snug text-slate-700 shadow-sm transition hover:border-accent-soft hover:text-accent-strong disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-200 dark:hover:border-accent-soft-dark dark:hover:text-accent-soft"
+                  disabled={!onSuggestedQuestion}
+                >
+                  {question}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 

@@ -1,4 +1,31 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800" viewBox="0 0 24 24" role="img" aria-label="Education favicon">
-  <path d="M17.673 5.606a3326.02 3326.02 0 0 1-5.671-2.674L.138 8.524l2.03.98L2 9.531V20h1v-9.626l.72-.124.28.135v5.288c0 .914 5.206 3.533 6.249 4.049a3.89 3.89 0 0 0 3.48-.026C20 16.486 20 15.895 20 15.673v-5.288l3.854-1.857s-3.8-1.801-6.181-2.922zM19 15.504a51.526 51.526 0 0 1-5.726 3.302 2.884 2.884 0 0 1-2.582.02A40.184 40.184 0 0 1 5 15.521v-4.655l7 3.373 7-3.373zm-7-2.373L5.416 9.958l6.469-1.115-.17-.987-7.85 1.354-1.403-.676 9.537-4.495c.825.393 8.523 4.014 9.542 4.494z"/>
-  <path fill="none" d="M0 0h24v24H0z"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="EduBot favicon">
+  <defs>
+    <linearGradient id="capGradient" x1="88" y1="177" x2="424" y2="344" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#31aee4"/>
+      <stop offset="0.55" stop-color="#4c4be2"/>
+      <stop offset="1" stop-color="#6c00df"/>
+    </linearGradient>
+  </defs>
+
+  <path
+    d="M256 115 91 178c-6 2-10 8-10 15v18c0 7 4 13 10 15l165 62 165-62c6-2 10-8 10-15v-18c0-7-4-13-10-15L256 115Z"
+    fill="url(#capGradient)"
+  />
+
+  <path
+    d="M161 258v40c0 42 50 70 95 70s95-28 95-70v-40l-95 36-95-36Z"
+    fill="url(#capGradient)"
+  />
+
+  <path
+    d="M393 220h24v104h-24z"
+    fill="url(#capGradient)"
+  />
+
+  <circle cx="405" cy="336" r="28" fill="url(#capGradient)"/>
+
+  <path
+    d="M392 361c-11 29-23 56-25 68-2 15 18 22 38 22s40-7 38-22c-2-12-14-39-25-68h-26Z"
+    fill="url(#capGradient)"
+  />
 </svg>

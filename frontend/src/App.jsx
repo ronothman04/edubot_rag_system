@@ -309,6 +309,8 @@ function App() {
         role: "assistant",
         content: data.answer,
         sources: data.sources,
+        suggested_questions: data.suggested_questions,
+        suggestion_topic: data.suggestion_topic,
       };
 
       const completedMessages = [...pendingMessages, botMsg];

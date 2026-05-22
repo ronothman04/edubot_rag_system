@@ -15,7 +15,7 @@ from rag import ask
 
 
 load_dotenv()
-load_dotenv(".ENV")
+load_dotenv(".env")
 
 app = FastAPI()
 
@@ -33,7 +33,7 @@ PROFILE_ID_COLUMNS = ("id", "uuid")
 # CORS for React
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[FRONTEND_URL],  # not "*"
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -8,6 +8,102 @@ const SUGGESTED_QUESTIONS = [
   "What are the tuition fees?",
 ];
 
+const NOT_FOUND_MESSAGE =
+  "I'm sorry, I don't have enough information to answer that based on the available college resources.";
+
+const FALLBACK_SUGGESTED_QUESTIONS = [
+  "What courses are available?",
+  "What is the admission process?",
+  "What are the eligibility criteria?",
+];
+
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^\w\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getSuggestionTopic(query) {
+  const normalized = normalizeText(query);
+
+  if (["pg", "p g", "postgraduate", "post graduate"].includes(normalized)) {
+    return "Post Graduate";
+  }
+
+  if (["ug", "u g", "undergraduate", "under graduate"].includes(normalized)) {
+    return "Under Graduate";
+  }
+
+  return null;
+}
+
+function buildFallbackSuggestions(query) {
+  const normalized = normalizeText(query);
+
+  if (!normalized) return FALLBACK_SUGGESTED_QUESTIONS;
+
+  if (normalized.includes("outdoor") || normalized.includes("sports")) {
+    return [
+      "What sports or outdoor activities are available?",
+      "What student activities are available?",
+      "What facilities are available for students?",
+    ];
+  }
+
+  if (normalized.includes("activity") || normalized.includes("activities")) {
+    return [
+      "What student activities are available?",
+      "What college activities are mentioned?",
+      "What social service activities are available?",
+    ];
+  }
+
+  if (normalized.includes("fee")) {
+    return [
+      "What are the tuition fees?",
+      "What fees are mentioned in the college resources?",
+      "What payment or admission fee details are available?",
+    ];
+  }
+
+  if (normalized.includes("admission") || normalized.includes("apply")) {
+    return [
+      "What is the admission process?",
+      "What admission requirements are there?",
+      "What are the eligibility criteria?",
+    ];
+  }
+
+  if (normalized.includes("course") || normalized.includes("program") || normalized === "pg" || normalized === "ug") {
+    return [
+      "What courses are available?",
+      "What academic programs are available?",
+      "What are the eligibility criteria?",
+    ];
+  }
+
+  return FALLBACK_SUGGESTED_QUESTIONS;
+}
+
+function isNoAnswerMessage(message) {
+  return (
+    message?.role === "assistant" &&
+    normalizeText(message.content).includes(normalizeText(NOT_FOUND_MESSAGE))
+  );
+}
+
+function getPreviousUserQuery(messages, index) {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === "user") {
+      return messages[i].content;
+    }
+  }
+
+  return "";
+}
+
 function ChatWindow({
   messages = [],
   loading,
@@ -81,9 +177,7 @@ function ChatWindow({
           <button className="hover:border-accent-soft hover:text-accent-strong dark:hover:text-accent-soft flex items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-[13px] font-medium text-slate-700 transition-colors dark:border-slate-700 dark:bg-slate-900/90 dark:text-slate-200">
             <span className="bg-accent h-2 w-2 flex-shrink-0 rounded-full" />
             <span className="truncate">Knowledge Assistant</span>
-            <svg className="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-            </svg>
+            
           </button>
         </div>
 
@@ -161,6 +255,17 @@ function ChatWindow({
                   setEditingIndex(null);
                   onEditMessage?.(i, content);
                 }}
+                onSuggestedQuestion={handleSend}
+                fallbackSuggestedQuestions={
+                  isNoAnswerMessage(msg)
+                    ? buildFallbackSuggestions(getPreviousUserQuery(messages, i))
+                    : []
+                }
+                fallbackSuggestionTopic={
+                  isNoAnswerMessage(msg)
+                    ? getSuggestionTopic(getPreviousUserQuery(messages, i))
+                    : null
+                }
               />
 
               {/* Assistant actions */}

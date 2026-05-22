@@ -1,12 +1,17 @@
 import re
+import json as _json
 from difflib import get_close_matches
 from typing import Any
 
+
 from db import collection
 from llm import generate
-from sentence_transformers import SentenceTransformer
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+
+# model = SentenceTransformer("all-MiniLM-L6-v2")
+
+from embeddings import get_embedding_model
+model = get_embedding_model()
 
 NOT_FOUND_MESSAGE = "I'm sorry, I don't have enough information to answer that based on the available college resources."
 
@@ -17,6 +22,12 @@ MAX_DISTANCE = 0.75
 
 
 QUERY_EXPANSIONS = {
+    "pg": "post graduate courses and programmes",
+    "postgraduate": "post graduate courses and programmes",
+    "post graduate": "post graduate courses and programmes",
+    "ug": "under graduate courses and programmes",
+    "undergraduate": "under graduate courses and programmes",
+    "under graduate": "under graduate courses and programmes",
     "course": "what courses are offered by the college",
     "courses": "what courses are offered by the college",
     "program": "what academic programs are available",
@@ -31,6 +42,25 @@ QUERY_EXPANSIONS = {
     "hostel": "is hostel accommodation available",
     "principal": "who is the principal of the college",
 }
+
+
+SUGGESTION_TOPICS = {
+    "pg": "Post Graduate",
+    "p g": "Post Graduate",
+    "postgraduate": "Post Graduate",
+    "post graduate": "Post Graduate",
+    "ug": "Under Graduate",
+    "u g": "Under Graduate",
+    "undergraduate": "Under Graduate",
+    "under graduate": "Under Graduate",
+}
+
+
+DEFAULT_SUGGESTED_QUESTIONS = [
+    "What courses are available?",
+    "What is the admission process?",
+    "What are the eligibility criteria?",
+]
 
 
 CASUAL_RESPONSES = {
@@ -284,6 +314,24 @@ def expand_query(query: str) -> str:
     return query
 
 
+def get_suggestion_topic(query: str) -> str | None:
+    normalized = normalize_query_text(query)
+
+    if not normalized:
+        return None
+
+    if normalized in SUGGESTION_TOPICS:
+        return SUGGESTION_TOPICS[normalized]
+
+    words = re.findall(r"\w+", normalized)
+
+    for word in words:
+        if word in SUGGESTION_TOPICS:
+            return SUGGESTION_TOPICS[word]
+
+    return None
+
+
 def clean_text(text: str) -> str:
     text = text or ""
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -401,6 +449,46 @@ def build_context(
 
     return "\n\n---\n\n".join(context_parts), sources
 
+def get_suggested_questions(query: str) -> list[str]:
+    """
+    When no context is found, sample available docs and ask the LLM
+    to suggest 3 related questions the user CAN actually get answers for.
+    """
+    try:
+        result = collection.get(
+            where={"deleted": False},
+            include=["documents"],
+            limit=15,
+        )
+        sample_docs = result.get("documents", [])
+
+        if not sample_docs:
+            return DEFAULT_SUGGESTED_QUESTIONS
+
+        sample_text = "\n\n".join(sample_docs[:8])[:2500]
+
+        prompt = f"""A user asked: "{query}"
+No relevant information was found in the college knowledge base.
+
+Here is a sample of what IS available:
+{sample_text}
+
+Generate exactly 3 helpful questions the user COULD ask that the knowledge base can answer.
+Return ONLY a valid JSON array of 3 question strings. No explanation, no markdown fences.
+Example: ["Question one?", "Question two?", "Question three?"]"""
+
+        raw = generate(prompt, temperature=0.3)
+        raw = re.sub(r"```json|```", "", raw).strip()
+        suggestions = _json.loads(raw)
+
+        if isinstance(suggestions, list):
+            return [str(q).strip() for q in suggestions if q][:3]
+
+    except Exception as e:
+        print(f"[EduBot] Suggestion generation failed: {e}")
+
+    return DEFAULT_SUGGESTED_QUESTIONS
+
 
 def ask(
     query: str,
@@ -419,11 +507,12 @@ def ask(
     query = (query or "").strip()
 
     if not query:
-        return {"answer": "Please enter a question.", "sources": []}
+        return {
+            "answer": "Please enter a question.",
+            "sources": [],
+        }
 
     # Casual response fast-path.
-    # This prevents RAG from searching ChromaDB for messages like:
-    # "hi", "thank you", "ok", "bye", including small spelling mistakes.
     casual_response = get_casual_response(query)
     if casual_response:
         return {
@@ -432,10 +521,7 @@ def ask(
             "response_type": "casual",
         }
 
-    # Smart response change:
-    # If the user says "just provide short answer", "tell me more", etc.,
-    # use the previous real question for retrieval, but keep the latest
-    # user message as the answer instruction.
+    # Build smart retrieval query.
     retrieval_query, latest_user_request, used_history = build_smart_query(
         query=query,
         history=history,
@@ -457,13 +543,31 @@ def ask(
         where_filter=where_filter,
     )
 
+    # No documents found at all.
     if not docs:
-        return {"answer": NOT_FOUND_MESSAGE, "sources": []}
+        suggestions = get_suggested_questions(retrieval_query)
+        suggestion_topic = get_suggestion_topic(query)
+
+        return {
+            "answer": NOT_FOUND_MESSAGE,
+            "sources": [],
+            "suggested_questions": suggestions,
+            "suggestion_topic": suggestion_topic,
+        }
 
     context, sources = build_context(docs, metas, dists)
 
+    # Documents were found, but none passed quality filters.
     if not context:
-        return {"answer": NOT_FOUND_MESSAGE, "sources": []}
+        suggestions = get_suggested_questions(retrieval_query)
+        suggestion_topic = get_suggestion_topic(query)
+
+        return {
+            "answer": NOT_FOUND_MESSAGE,
+            "sources": [],
+            "suggested_questions": suggestions,
+            "suggestion_topic": suggestion_topic,
+        }
 
     system = f"""
 You are EduBot, a strict document-based assistant.
@@ -525,8 +629,17 @@ Answer:
 
     answer = clean_text(answer)
 
+    # LLM refused/not found even after context.
     if not answer or NOT_FOUND_MESSAGE.lower() in answer.lower():
-        return {"answer": NOT_FOUND_MESSAGE, "sources": []}
+        suggestions = get_suggested_questions(retrieval_query)
+        suggestion_topic = get_suggestion_topic(query)
+
+        return {
+            "answer": NOT_FOUND_MESSAGE,
+            "sources": [],
+            "suggested_questions": suggestions,
+            "suggestion_topic": suggestion_topic,
+        }
 
     return {
         "answer": answer,
