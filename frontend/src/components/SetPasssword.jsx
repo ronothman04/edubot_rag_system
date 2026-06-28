@@ -2,6 +2,8 @@ import { useState } from "react";
 import { supabase } from "../supabaseClient";
 import { toast } from "react-hot-toast";
 
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
 function UpdatePassword({ setCurrentView }) {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -33,6 +35,33 @@ function UpdatePassword({ setCurrentView }) {
       });
 
       if (error) throw error;
+
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        throw new Error("Your invite session expired. Please open the invite link again.");
+      }
+
+      const completeResponse = await fetch(`${API_URL}/admin/complete-invite`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          full_name: session.user?.user_metadata?.full_name || "",
+        }),
+      });
+
+      const completeData = await completeResponse.json().catch(() => ({}));
+
+      if (!completeResponse.ok) {
+        throw new Error(
+          completeData.detail || completeData.error || "Failed to activate admin account.",
+        );
+      }
 
       toast.success("Password set successfully. Please log in.");
 

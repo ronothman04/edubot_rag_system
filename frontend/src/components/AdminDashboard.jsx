@@ -264,8 +264,15 @@ function AdminDashboard({ user }) {
     formData.append("file", file);
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers = {};
+      if (session?.access_token) {
+        headers["Authorization"] = `Bearer ${session.access_token}`;
+      }
+
       const res = await fetch(`${API_URL}/upload`, {
         method: "POST",
+        headers,
         body: formData,
       });
 
@@ -288,8 +295,15 @@ function AdminDashboard({ user }) {
   const handleDelete = async (filename) => {
     const toastId = toast.loading(`Deleting ${filename}...`);
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers = {};
+      if (session?.access_token) {
+        headers["Authorization"] = `Bearer ${session.access_token}`;
+      }
+
       const res = await fetch(`${API_URL}/documents/${encodeURIComponent(filename)}`, {
         method: "DELETE",
+        headers,
       });
 
       if (res.ok) {

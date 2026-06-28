@@ -6,7 +6,6 @@ import io
 def extract_text_from_image(file_bytes: bytes) -> str:
     """
     Extract text from image files like PNG, JPG, JPEG, WEBP.
-    Best for notices, marksheets, screenshots, scanned pages, etc.
     """
     image = Image.open(io.BytesIO(file_bytes))
 

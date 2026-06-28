@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Sidebar from "./components/Sidebar";
 import ChatWindow from "./components/ChatWindow";
 import InputBox from "./components/InputBox";
@@ -7,24 +7,30 @@ import Auth from "./components/Auth";
 import UpdatePassword from "./components/UpdatePassword";
 import AdminDashboard from "./components/AdminDashboard";
 import AdminDocuments from "./components/admin/AdminDocuments";
+import WebsiteCrawler from "./components/admin/AdminWebCrawl";
 import AdminQueries from "./components/admin/AdminQueries";
 import AdminAnalytics from "./components/admin/AdminAnalytics";
 import AdminTest from "./components/admin/AdminTest";
 import AdminManagement from "./components/admin/AdminManagement";
 import AdminHistory from "./components/admin/AdminHistory";
 import SetPassword from "./components/SetPasssword";
-
-
 import { sendMessage } from "./services/api";
 import { deleteChatActivity, logChatActivity } from "./services/chatAnalytics";
 import { supabase } from "./supabaseClient";
 import { Toaster } from "react-hot-toast";
 import { applyAccentColor } from "./themeAccent";
 
+
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const CHAT_STORAGE_PREFIX = "chat_history:";
+const ACTIVE_CHAT_SESSION_PREFIX = "active_chat_session:";
 
 function getChatStorageKey(userId) {
   return `${CHAT_STORAGE_PREFIX}${userId}`;
+}
+
+function getActiveChatSessionKey(userId) {
+  return `${ACTIVE_CHAT_SESSION_PREFIX}${userId}`;
 }
 
 function createConversationTitle(messages) {
@@ -77,6 +83,32 @@ function writeStoredChats(userId, payload) {
   window.localStorage.setItem(getChatStorageKey(userId), JSON.stringify(payload));
 }
 
+function readActiveChatSessionId(userId) {
+  if (!userId || typeof window === "undefined") return null;
+
+  try {
+    return window.sessionStorage.getItem(getActiveChatSessionKey(userId));
+  } catch {
+    return null;
+  }
+}
+
+function writeActiveChatSessionId(userId, conversationId) {
+  if (!userId || typeof window === "undefined") return;
+
+  try {
+    const key = getActiveChatSessionKey(userId);
+
+    if (conversationId) {
+      window.sessionStorage.setItem(key, conversationId);
+    } else {
+      window.sessionStorage.removeItem(key);
+    }
+  } catch {
+    // Chat history persistence should keep working even if sessionStorage is unavailable.
+  }
+}
+
 
 function buildHistoryFromMessages(messages) {
   let nextHistory = "";
@@ -98,10 +130,46 @@ function isAdminRole(role) {
   return role === "admin" || role === "super_admin";
 }
 
+async function fetchProfileRole(session) {
+  if (!session?.access_token || !session?.user?.id) return null;
+
+  try {
+    const response = await fetch(`${API_URL}/auth/profile-role`, {
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+      },
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (response.ok) {
+      return data.role || null;
+    }
+
+    console.warn(data.detail || data.error || "Failed to load profile role.");
+  } catch (error) {
+    console.warn("Failed to load profile role:", error.message);
+  }
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", session.user.id)
+    .maybeSingle();
+
+  if (error) {
+    console.warn("Failed to load profile role:", error.message);
+    return null;
+  }
+
+  return data?.role || null;
+}
+
 const AUTH_VIEWS = new Set(["login", "register", "update-password", "set-password"]);
 const ADMIN_VIEWS = new Set([
   "admin",
   "admin-documents",
+  "admin-crawl",
   "admin-test",
   "admin-queries",
   "admin-analytics",
@@ -111,11 +179,24 @@ const ADMIN_VIEWS = new Set([
 ]);
 
 function getAuthenticatedView(currentView, role) {
+  if (currentView === "set-password" || currentView === "update-password") {
+    return currentView;
+  }
+
   if (isAdminRole(role)) {
     return ADMIN_VIEWS.has(currentView) || currentView === "settings" ? currentView : "admin";
   }
 
   return AUTH_VIEWS.has(currentView) || ADMIN_VIEWS.has(currentView) ? "chat" : currentView;
+}
+
+function getViewFromPath() {
+  if (typeof window === "undefined") return null;
+
+  const pathView = window.location.pathname.replace(/^\/+/, "").replace(/\/+$/, "");
+  return AUTH_VIEWS.has(pathView) || ADMIN_VIEWS.has(pathView) || pathView === "settings"
+    ? pathView
+    : null;
 }
 
 function applyStoredAccentColor() {
@@ -129,55 +210,94 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [, setHistory] = useState("");
   const [loading, setLoading] = useState(false);
-  const [currentView, setCurrentView] = useState("chat");
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [currentView, setCurrentView] = useState(() => getViewFromPath() || "login");
   const [user, setUser] = useState(null);
-  const [showGuestLimitModal, setShowGuestLimitModal] = useState(false);
+  const [profileRole, setProfileRole] = useState(null);
   const [conversations, setConversations] = useState([]);
   const [currentConversationId, setCurrentConversationId] = useState(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
+    if (typeof window !== "undefined") {
+      return window.localStorage.getItem("sidebar_collapsed") === "true";
+    }
+    return false;
+  });
+  const abortControllerRef = useRef(null);
 
   const isAdminUser =
-    isAdminRole(user?.user_metadata?.role) || isAdminRole(user?.app_metadata?.role);
+    isAdminRole(profileRole) ||
+    isAdminRole(user?.user_metadata?.role) ||
+    isAdminRole(user?.app_metadata?.role);
   const userId = user?.id ?? null;
 
-  const guestMessageCount = user ? 0 : messages.filter((message) => message.role === "user").length;
-  const guestLimitReached = !user && guestMessageCount >= 5;
-
-  useEffect(() => {
-    if (guestLimitReached) {
-      setShowGuestLimitModal(true);
-    }
-  }, [guestLimitReached]);
+  const handleToggleSidebarCollapse = () => {
+    setIsSidebarCollapsed((prev) => {
+      const next = !prev;
+      window.localStorage.setItem("sidebar_collapsed", String(next));
+      return next;
+    });
+  };
 
   useEffect(() => {
     applyStoredAccentColor();
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-      
-      const role = session?.user?.user_metadata?.role || session?.user?.app_metadata?.role;
-      if (isAdminRole(role)) {
-        setCurrentView((view) => getAuthenticatedView(view, role));
-      } else if (!session?.user) {
-        setCurrentView("login");
-      } else {
-        setCurrentView((view) => getAuthenticatedView(view, role));
+
+    let ignore = false;
+
+    async function applySession(session) {
+      const authUser = session?.user ?? null;
+      const pathView = getViewFromPath();
+
+      if (!authUser) {
+        if (!ignore) {
+          setUser(null);
+          setProfileRole(null);
+          setCurrentView(pathView && AUTH_VIEWS.has(pathView) ? pathView : "login");
+        }
+        return;
       }
+
+      const roleFromProfile = await fetchProfileRole(session);
+      const role =
+        roleFromProfile || authUser.user_metadata?.role || authUser.app_metadata?.role;
+
+      if (!ignore) {
+        setUser(authUser);
+        setProfileRole(roleFromProfile);
+        setCurrentView((view) => getAuthenticatedView(pathView || view, role));
+      }
+    }
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      applySession(session).finally(() => {
+        if (!ignore) {
+          setSessionLoading(false);
+        }
+      });
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-      
       if (_event === 'PASSWORD_RECOVERY') {
+        setUser(session?.user ?? null);
         setCurrentView("update-password");
       } else if (_event === 'SIGNED_IN') {
-        const role = session?.user?.user_metadata?.role || session?.user?.app_metadata?.role;
-        setCurrentView((view) => getAuthenticatedView(view, role));
+        applySession(session).finally(() => {
+          if (!ignore) {
+            setSessionLoading(false);
+          }
+        });
       } else if (_event === 'SIGNED_OUT') {
+        setUser(null);
+        setProfileRole(null);
         setCurrentView("login");
+        setSessionLoading(false);
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      ignore = true;
+      subscription.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -192,8 +312,9 @@ function App() {
     }
 
     const storedChats = readStoredChats(userId);
+    const activeSessionConversationId = readActiveChatSessionId(userId);
     const activeConversation = storedChats.conversations.find(
-      (conversation) => conversation.id === storedChats.activeConversationId,
+      (conversation) => conversation.id === activeSessionConversationId,
     );
 
     setConversations(storedChats.conversations);
@@ -211,6 +332,17 @@ function App() {
     });
   }, [conversations, currentConversationId, userId, isAdminUser]);
 
+  // Auth Guard: if not loading, check if unauthenticated user is trying to access chat/settings/admin views.
+  useEffect(() => {
+    if (sessionLoading) return;
+    if (!user) {
+      const pathView = getViewFromPath();
+      if (!pathView || !AUTH_VIEWS.has(pathView)) {
+        setCurrentView("login");
+      }
+    }
+  }, [user, sessionLoading, currentView]);
+
   const openConversation = (conversationId) => {
     const selectedConversation = conversations.find(
       (conversation) => conversation.id === conversationId,
@@ -219,6 +351,7 @@ function App() {
     if (!selectedConversation) return;
 
     setCurrentConversationId(selectedConversation.id);
+    writeActiveChatSessionId(userId, selectedConversation.id);
     setMessages(selectedConversation.messages);
     setHistory(buildHistoryFromMessages(selectedConversation.messages));
     setCurrentView("chat");
@@ -229,6 +362,7 @@ function App() {
     setMessages([]);
     setHistory("");
     setCurrentConversationId(null);
+    writeActiveChatSessionId(userId, null);
     setCurrentView("chat");
     setIsSidebarOpen(false);
   };
@@ -247,6 +381,7 @@ function App() {
 
       if (currentConversationId === conversationId) {
         setCurrentConversationId(null);
+        writeActiveChatSessionId(userId, null);
         setMessages([]);
         setHistory("");
       }
@@ -273,6 +408,7 @@ function App() {
     };
 
     setCurrentConversationId(conversationId);
+    writeActiveChatSessionId(userId, conversationId);
     setConversations((prev) => {
       const withoutCurrent = prev.filter((conversation) => conversation.id !== conversationId);
       return [nextConversation, ...withoutCurrent].sort(
@@ -287,11 +423,6 @@ function App() {
     const { replaceFromIndex = null } = options;
     if (!input.trim()) return;
 
-    if (replaceFromIndex === null && guestLimitReached) {
-      setShowGuestLimitModal(true);
-      return;
-    }
-
     const baseMessages =
       replaceFromIndex === null ? messages : messages.slice(0, replaceFromIndex);
     const baseHistory = buildHistoryFromMessages(baseMessages);
@@ -300,10 +431,14 @@ function App() {
     setMessages(pendingMessages);
     setHistory(baseHistory);
 
+    // Set up a fresh abort controller so the user can stop this generation.
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setLoading(true);
 
     try {
-      const data = await sendMessage(input, baseHistory);
+      const data = await sendMessage(input, baseHistory, { signal: controller.signal });
 
       const botMsg = {
         role: "assistant",
@@ -311,6 +446,7 @@ function App() {
         sources: data.sources,
         suggested_questions: data.suggested_questions,
         suggestion_topic: data.suggestion_topic,
+        response_type: data.response_type,
       };
 
       const completedMessages = [...pendingMessages, botMsg];
@@ -324,6 +460,12 @@ function App() {
         conversationId,
       });
     } catch (error) {
+      // User-initiated stop: leave the existing messages as-is (the user's
+      // message stays visible) and don't surface an error bubble.
+      if (error?.name === "AbortError") {
+        return;
+      }
+
       const errorText = error?.message || "Something went wrong. Please try again.";
       const failedMessages = [
         ...pendingMessages,
@@ -333,8 +475,17 @@ function App() {
       setHistory(buildHistoryFromMessages(failedMessages));
       persistConversationMessages(failedMessages);
     } finally {
+      abortControllerRef.current = null;
       setLoading(false);
     }
+  };
+
+  const handleStop = () => {
+    // Abort the in-flight request and instantly clear the loading state so the
+    // UI reverts to the Send button right away.
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setLoading(false);
   };
 
   const handleSend = (input) => submitMessage(input);
@@ -342,10 +493,23 @@ function App() {
   const handleEditMessage = (index, content) =>
     submitMessage(content, { replaceFromIndex: index });
 
+  if (sessionLoading) {
+    return (
+      <div className="flex h-dvh w-screen items-center justify-center bg-gray-50 dark:bg-slate-950 transition-colors">
+        <div className="flex flex-col items-center gap-4">
+          <div className="h-12 w-12 animate-spin rounded-full border-4 border-slate-200 border-t-[var(--accent-color)] dark:border-slate-800" style={{ borderTopColor: 'var(--accent-color, #2563eb)' }}></div>
+          <p className="text-sm font-medium text-slate-500 dark:text-slate-400 animate-pulse">Loading EduBot...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const isAuthView = AUTH_VIEWS.has(currentView);
+
   return (
     <div className="flex h-dvh overflow-hidden bg-gray-50 transition-colors dark:bg-slate-900 dark:text-slate-100">
       <Toaster />
-      {isSidebarOpen && (
+      {isSidebarOpen && !isAuthView && (
         <button
           type="button"
           aria-label="Close navigation"
@@ -353,138 +517,107 @@ function App() {
           onClick={() => setIsSidebarOpen(false)}
         />
       )}
-      <Sidebar
-        setMessages={setMessages}
-        setHistory={setHistory}
-        setCurrentView={setCurrentView}
-        currentView={currentView}
-        conversations={conversations}
-        currentConversationId={currentConversationId}
-        onSelectConversation={openConversation}
-        onDeleteConversation={deleteConversation}
-        onNewChat={startNewChat}
-        user={user}
-        isOpen={isSidebarOpen}
-        onClose={() => setIsSidebarOpen(false)}
-      />
-     <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-  <button
-    type="button"
-    aria-label="Open navigation"
-    onClick={() => setIsSidebarOpen(true)}
-    className="fixed left-3 top-3 z-20 inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white/95 text-slate-700 shadow-sm backdrop-blur transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900/95 dark:text-slate-100 dark:hover:bg-slate-800 md:hidden"
-  >
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M4 6h16" />
-      <path d="M4 12h16" />
-      <path d="M4 18h16" />
-    </svg>
-  </button>
-  {currentView === "settings" ? (
-<Settings setCurrentView={setCurrentView} user={user} />
-  ) : currentView === "admin" ? (
-    <AdminDashboard user={user} />
+      {!isAuthView && (
+        <Sidebar
+          setMessages={setMessages}
+          setHistory={setHistory}
+          setCurrentView={setCurrentView}
+          currentView={currentView}
+          conversations={conversations}
+          currentConversationId={currentConversationId}
+          onSelectConversation={openConversation}
+          onDeleteConversation={deleteConversation}
+          onNewChat={startNewChat}
+          user={user}
+          profileRole={profileRole}
+          isOpen={isSidebarOpen}
+          isCollapsed={isSidebarCollapsed}
+          onToggleCollapse={handleToggleSidebarCollapse}
+          onClose={() => setIsSidebarOpen(false)}
+        />
+      )}
+      <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+        {currentView !== "login" && currentView !== "register" && currentView !== "update-password" && currentView !== "set-password" && currentView !== "chat" && (
+          <button
+            type="button"
+            aria-label="Open navigation"
+            onClick={() => setIsSidebarOpen(true)}
+            className="fixed left-3 top-3 z-20 inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white/95 text-slate-700 shadow-sm backdrop-blur transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900/95 dark:text-slate-100 dark:hover:bg-slate-800 md:hidden"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M4 6h16" />
+              <path d="M4 12h16" />
+              <path d="M4 18h16" />
+            </svg>
+          </button>
+        )}
+        {currentView === "settings" ? (
+          <Settings setCurrentView={setCurrentView} user={user} profileRole={profileRole} />
+        ) : currentView === "admin" ? (
+          <AdminDashboard user={user} />
 
-  ) : currentView === "admin-documents" ? (
-    <AdminDocuments user={user} />
+        ) : currentView === "admin-documents" ? (
+          <AdminDocuments user={user} />
 
-  ) : currentView === "admin-test" ? (
-    <AdminTest user={user} />
-
-  ) : currentView === "admin-queries" ? (
-    <AdminQueries user={user} />
-
-  ) : currentView === "admin-analytics" ? (
-    <AdminAnalytics user={user} />
-
-  ) : currentView === "admin-management" ? (
-    <AdminManagement user={user} />
-
-  ) : currentView === "admin-history" ? (
-    <AdminHistory user={user} />
-
-  ) : currentView === "admin-faqs" ? (
-    <AdminDashboard user={user} /> /* FAQs not implemented yet – fallback to dashboard */
-
-  ) : currentView === "update-password" ? (
-    <UpdatePassword setCurrentView={setCurrentView} />
-
-  ) : currentView === "set-password" ? (
-    <SetPassword setCurrentView={setCurrentView} />
-
-  ) : currentView === "login" || currentView === "register" ? (
-    <Auth
-      isLoginView={currentView === "login"}
-      setCurrentView={setCurrentView}
-      setUser={setUser}
-    />
-
-  ) : (
-    <>
-      <ChatWindow
-        messages={messages}
-        loading={loading}
-        onSend={handleSend}
-        onEditMessage={handleEditMessage}
-        setCurrentView={setCurrentView}
-        user={user}
-        onOpenSidebar={() => setIsSidebarOpen(true)}
-      />
-
-      <InputBox
-        onSend={handleSend}
-        loading={loading}
-        disabled={guestLimitReached}
-      />
-    </>
-  )}
-</div>
-
-      {showGuestLimitModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-[28px] border border-white/10 bg-white p-6 shadow-2xl dark:bg-slate-900">
-            <div className="bg-accent-soft text-accent-strong dark:bg-accent-soft-dark dark:text-accent-soft mb-4 flex h-12 w-12 items-center justify-center rounded-2xl">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M12 9v4" />
-                <path d="M12 17h.01" />
-                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
-              </svg>
-            </div>
-            <h3 className="text-2xl font-semibold text-slate-900 dark:text-white">
-              Guest limit reached
-            </h3>
-            <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
-              You have reached a 5 message limit. Please login to continue.
-            </p>
-            <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-              <button
-                onClick={() => {
-                  setShowGuestLimitModal(false);
-                  setCurrentView("login");
-                }}
-                className="bg-accent hover:bg-accent-dark rounded-full px-5 py-2.5 text-sm font-medium text-white transition-colors cursor-pointer"
-              >
-                Login
-              </button>
-              <button
-                onClick={() => {
-                  setShowGuestLimitModal(false);
-                  setCurrentView("register");
-                }}
-                className="rounded-full border border-slate-200 px-5 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 cursor-pointer dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-              >
-                Sign Up
-              </button>
-              <button
-                onClick={() => setShowGuestLimitModal(false)}
-                className="rounded-full px-5 py-2.5 text-sm font-medium text-slate-500 transition-colors hover:text-slate-700 cursor-pointer dark:text-slate-400 dark:hover:text-slate-200"
-              >
-                Close
-              </button>
+        ) : currentView === "admin-crawl" ? (
+          <div className="flex-1 overflow-y-auto bg-gray-50 px-4 pb-8 pt-16 text-gray-900 dark:bg-[#020817] dark:text-slate-100 sm:px-6 md:pt-8">
+            <div className="mx-auto max-w-6xl">
+              <WebsiteCrawler onCrawlComplete={() => {}} setCurrentView={setCurrentView} />
             </div>
           </div>
-        </div>
-      )}
+
+        ) : currentView === "admin-test" ? (
+          <AdminTest user={user} />
+
+        ) : currentView === "admin-queries" ? (
+          <AdminQueries user={user} />
+
+        ) : currentView === "admin-analytics" ? (
+          <AdminAnalytics user={user} />
+
+        ) : currentView === "admin-management" ? (
+          <AdminManagement user={user} />
+
+        ) : currentView === "admin-history" ? (
+          <AdminHistory user={user} />
+
+        ) : currentView === "admin-faqs" ? (
+          <AdminDashboard user={user} /> /* FAQs not implemented yet – fallback to dashboard */
+
+        ) : currentView === "update-password" ? (
+          <UpdatePassword setCurrentView={setCurrentView} />
+
+        ) : currentView === "set-password" ? (
+          <SetPassword setCurrentView={setCurrentView} />
+
+        ) : currentView === "login" || currentView === "register" ? (
+          <Auth
+            isLoginView={currentView === "login"}
+            setCurrentView={setCurrentView}
+            setUser={setUser}
+          />
+
+        ) : (
+          <>
+            <ChatWindow
+              messages={messages}
+              loading={loading}
+              onSend={handleSend}
+              onEditMessage={handleEditMessage}
+              setCurrentView={setCurrentView}
+              user={user}
+              onOpenSidebar={() => setIsSidebarOpen(true)}
+            />
+
+            <InputBox
+              onSend={handleSend}
+              onStop={handleStop}
+              loading={loading}
+              disabled={false}
+            />
+          </>
+        )}
+      </div>
     </div>
   );
 }

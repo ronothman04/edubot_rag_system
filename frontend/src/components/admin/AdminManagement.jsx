@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "../../supabaseClient";
 import { toast } from "react-hot-toast";
 
@@ -12,65 +12,54 @@ function AdminManagement({ user }) {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  async function fetchAdmins() {
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("id, email, role, created_at")
-      .in("role", ["admin", "super_admin"])
-      .order("created_at", { ascending: false });
+  async function getAccessToken() {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
 
-    if (error) {
-      console.error(error.message);
-      return [];
+    if (!session?.access_token) {
+      throw new Error("You must be logged in as an admin.");
     }
 
-    return data || [];
+    return session.access_token;
   }
 
-  async function fetchInvites() {
-    const { data, error } = await supabase
-      .from("admin_invites")
-      .select("id, email, role, status, created_at")
-      .eq("status", "pending")
-      .order("created_at", { ascending: false });
+  async function adminRequest(path, options = {}) {
+    const accessToken = await getAccessToken();
+    const res = await fetch(`${API_URL}${path}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+        ...(options.headers || {}),
+      },
+    });
 
-    if (error) {
-      console.error(error.message);
-      return [];
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      throw new Error(data.detail || data.error || "Admin request failed.");
     }
 
-    return data || [];
-  }
-
-  async function fetchLogs() {
-    const { data, error } = await supabase
-      .from("admin_activity_logs")
-      .select("id, action, target_email, created_at")
-      .order("created_at", { ascending: false })
-      .limit(10);
-
-    if (error) {
-      console.error(error.message);
-      return [];
-    }
-
-    return data || [];
+    return data;
   }
 
   async function loadAdminManagement() {
     setLoading(true);
 
-    const [adminsData, invitesData, logsData] = await Promise.all([
-      fetchAdmins(),
-      fetchInvites(),
-      fetchLogs(),
-    ]);
-
-    setAdmins(adminsData);
-    setInvites(invitesData);
-    setLogs(logsData);
-
-    setLoading(false);
+    try {
+      const data = await adminRequest("/admin/management");
+      setAdmins(data.admins || []);
+      setInvites(data.invites || []);
+      setLogs(data.logs || []);
+    } catch (error) {
+      toast.error(error.message || "Failed to load admin management.");
+      setAdmins([]);
+      setInvites([]);
+      setLogs([]);
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -86,33 +75,15 @@ function AdminManagement({ user }) {
     setInviting(true);
 
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (!session?.access_token) {
-        throw new Error("You must be logged in to invite an admin.");
-      }
-
-      const res = await fetch(`${API_URL}/admin/invite-admin`, {
+      const data = await adminRequest("/admin/invite-admin", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
         body: JSON.stringify({
           email: inviteEmail.trim(),
           role: "admin",
         }),
       });
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.detail || data.error || "Failed to invite admin.");
-      }
-
-      toast.success("Admin invite sent.");
+      toast.success(data.message || "Admin invite sent.");
       setInviteEmail("");
       loadAdminManagement();
     } catch (error) {
@@ -123,42 +94,39 @@ function AdminManagement({ user }) {
   }
 
   async function cancelInvite(inviteId) {
-    const { error } = await supabase
-      .from("admin_invites")
-      .update({ status: "cancelled" })
-      .eq("id", inviteId);
+    try {
+      const data = await adminRequest(`/admin/invites/${inviteId}/cancel`, {
+        method: "PATCH",
+      });
 
-    if (error) {
-      toast.error("Failed to cancel invite.");
-      return;
+      toast.success(data.message || "Invite cancelled.");
+      loadAdminManagement();
+    } catch (error) {
+      toast.error(error.message || "Failed to cancel invite.");
     }
-
-    toast.success("Invite cancelled.");
-    loadAdminManagement();
   }
 
   async function removeAdmin(profileId) {
     const confirmRemove = window.confirm("Remove admin access for this user?");
     if (!confirmRemove) return;
 
-    const { error } = await supabase
-      .from("profiles")
-      .update({ role: "student" })
-      .eq("id", profileId);
+    try {
+      const data = await adminRequest("/admin/remove-admin", {
+        method: "PATCH",
+        body: JSON.stringify({ profile_id: profileId }),
+      });
 
-    if (error) {
-      toast.error("Failed to remove admin.");
-      return;
+      toast.success(data.message || "Admin access removed.");
+      loadAdminManagement();
+    } catch (error) {
+      toast.error(error.message || "Failed to remove admin.");
     }
-
-    toast.success("Admin access removed.");
-    loadAdminManagement();
   }
 
   return (
-    <div className="flex-1 overflow-y-auto bg-gray-50 px-4 pb-6 pt-16 text-gray-900 dark:bg-[#020817] dark:text-slate-100 sm:px-6 md:pt-6">
-      <div className="mx-auto max-w-7xl space-y-6">
-        <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
+    <div className="min-w-0 flex-1 overflow-y-auto bg-gray-50 px-3 pb-6 pt-16 text-gray-900 dark:bg-[#020817] dark:text-slate-100 sm:px-5 md:pt-6">
+      <div className="mx-auto w-full max-w-6xl space-y-5">
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/60 sm:p-6">
           <p className="text-accent-soft text-xs font-semibold uppercase tracking-[0.24em]">
             Admin Management
           </p>
@@ -172,7 +140,7 @@ function AdminManagement({ user }) {
           </p>
         </div>
 
-        <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/60 sm:p-6">
           <h2 className="text-xl font-semibold text-gray-950 dark:text-white">
             Invite New Admin
           </h2>
@@ -193,14 +161,14 @@ function AdminManagement({ user }) {
             <button
               onClick={inviteAdmin}
               disabled={inviting || !inviteEmail.trim()}
-              className="bg-accent hover:bg-accent-dark rounded-xl px-5 py-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+              className="bg-accent hover:bg-accent-dark rounded-xl px-5 py-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50 md:w-auto"
             >
               {inviting ? "Sending..." : "Send Invite"}
             </button>
           </div>
         </div>
 
-        <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/60 sm:p-6">
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h2 className="text-xl font-semibold text-gray-950 dark:text-white">
               Active Administrators
@@ -220,8 +188,8 @@ function AdminManagement({ user }) {
             <p className="text-sm text-gray-500 dark:text-slate-400">No admins found.</p>
           ) : (
             <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-slate-800">
-              <div className="overflow-x-auto">
-              <table className="min-w-[720px] text-left text-sm">
+              <div className="w-full overflow-x-auto">
+              <table className="w-full min-w-[640px] text-left text-sm">
                 <thead className="bg-gray-100 text-gray-700 dark:bg-slate-950 dark:text-slate-300">
                   <tr>
                     <th className="px-4 py-3">Email</th>
@@ -236,7 +204,7 @@ function AdminManagement({ user }) {
                     const isCurrentUser = admin.id === user?.id;
 
                     return (
-                      <tr key={admin.id}>
+                      <tr key={admin.id || admin.email}>
                         <td className="px-4 py-4 text-gray-800 dark:text-slate-200">
                           {admin.email || "Unknown email"}
 
@@ -273,6 +241,7 @@ function AdminManagement({ user }) {
                           ) : (
                             <button
                               onClick={() => removeAdmin(admin.id)}
+                              disabled={!admin.id}
                               className="rounded-lg bg-red-500/10 px-3 py-2 text-xs font-medium text-red-300 hover:bg-red-500/20"
                             >
                               Remove Admin
@@ -290,7 +259,7 @@ function AdminManagement({ user }) {
         </div>
 
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-          <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
+          <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/60 sm:p-6">
             <h2 className="text-xl font-semibold text-gray-950 dark:text-white">
               Pending Invitations
             </h2>
@@ -331,7 +300,7 @@ function AdminManagement({ user }) {
             )}
           </div>
 
-          <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
+          <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/60 sm:p-6">
             <h2 className="text-xl font-semibold text-gray-950 dark:text-white">Activity Log</h2>
 
             {loading ? (

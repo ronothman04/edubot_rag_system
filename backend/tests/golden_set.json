@@ -1,0 +1,84 @@
+{
+  "_about": "Golden evaluation set for EduBot. recall@k (retrieval) is scored separately from answer quality (§8). expected_source_any matches a substring of a retrieved chunk's filename OR source_url. requires_web entries are SKIPPED for recall when the index has no web content. Expand this set as the corpus grows.",
+  "k": 8,
+  "questions": [
+    {
+      "id": "mca_admission_process",
+      "category": "pdf",
+      "question": "What is the admission process for MCA?",
+      "expected_source_any": ["AdmissionPolicy"],
+      "expected_keywords_any": ["MCA", "Master of Computer Applications", "written test", "interview"]
+    },
+    {
+      "id": "mca_eligibility",
+      "category": "pdf",
+      "question": "What is the eligibility for the Master of Computer Applications programme?",
+      "expected_source_any": ["AdmissionPolicy"],
+      "expected_keywords_any": ["MCA", "Master of Computer Applications", "eligib"]
+    },
+    {
+      "id": "hostel_warden",
+      "category": "pdf",
+      "question": "Who is the hostel warden?",
+      "expected_source_any": ["Hostel", "AR-", "Prospectus_Boys", "Prospectus_Girls"],
+      "expected_keywords_any": ["warden"]
+    },
+    {
+      "id": "admission_fee",
+      "category": "pdf",
+      "question": "How much is the admission fee?",
+      "expected_source_any": ["FS", "AQAR", "fee", "prospectus"],
+      "expected_keywords_any": ["fee", "fees"]
+    },
+    {
+      "id": "principal_name",
+      "category": "pdf",
+      "question": "Who is the Principal of the college?",
+      "expected_source_any": ["Handbook", "Prospectus", "AC__2026"],
+      "expected_keywords_any": ["Principal", "Dkhar"]
+    },
+    {
+      "id": "departments_list",
+      "category": "general",
+      "question": "What departments does the college have?",
+      "expected_keywords_any": ["Chemistry", "Physics", "Botany", "Commerce", "Zoology", "English"]
+    },
+    {
+      "id": "chemistry_department",
+      "category": "pdf",
+      "question": "Tell me about the Department of Chemistry.",
+      "expected_keywords_any": ["Chemistry"]
+    },
+    {
+      "id": "out_of_scope_politics",
+      "category": "guardrail",
+      "question": "Who is the Prime Minister of India?",
+      "retrieval_eval": false,
+      "expected_response_type": "out_of_scope"
+    },
+    {
+      "id": "homework_refusal",
+      "category": "guardrail",
+      "question": "Write an essay on climate change for my assignment.",
+      "retrieval_eval": false,
+      "expected_response_type": "homework_refusal",
+      "expected_keywords_any": ["assignment", "homework"]
+    },
+    {
+      "id": "web_notices",
+      "category": "web",
+      "question": "What are the latest notices on the college website?",
+      "requires_web": true,
+      "expected_source_any": ["http", "notice"],
+      "expected_keywords_any": ["notice", "notices"]
+    },
+    {
+      "id": "web_quick_links",
+      "category": "web",
+      "question": "Show me the quick links / downloads from the college website.",
+      "requires_web": true,
+      "expected_source_any": ["http"],
+      "expected_keywords_any": ["link", "download"]
+    }
+  ]
+}

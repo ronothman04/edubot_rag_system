@@ -19,7 +19,7 @@ function getSpeechRecognitionSupportMessage() {
   return "Voice input is not available in this browser. Please use Android Chrome/Edge over HTTPS, or type your question.";
 }
 
-function InputBox({ onSend, loading, disabled = false }) {
+function InputBox({ onSend, onStop, loading, disabled = false }) {
   const [input, setInput] = useState("");
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef(null);
@@ -112,16 +112,15 @@ function InputBox({ onSend, loading, disabled = false }) {
       startListening();
     }
   };
-
   return (
-    <div className="border-t border-slate-200/80 bg-white/95 px-2 py-2 backdrop-blur transition-colors dark:border-slate-800 dark:bg-slate-950/95 sm:px-3 lg:px-4">
-      <div className="w-full">
-        <div className="flex items-end gap-2 rounded-[22px] border border-slate-200 bg-white p-2 shadow-[0_16px_40px_rgba(15,23,42,0.08)] transition-colors dark:border-slate-700 dark:bg-slate-900 dark:shadow-[0_16px_40px_rgba(2,6,23,0.35)] sm:gap-3 sm:rounded-[25px] sm:p-2.5">
+    <div className="border-t border-slate-200/80 bg-white/95 px-3 py-3.5 backdrop-blur transition-colors dark:border-slate-800/80 dark:bg-slate-950/95 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-4xl w-full">
+        <div className="flex items-end gap-2 rounded-[20px] border border-slate-250 bg-white p-1.5 shadow-sm transition-all focus-within:border-blue-500/30 focus-within:ring-2 focus-within:ring-blue-500/10 dark:border-slate-800 dark:bg-slate-900 sm:gap-3 sm:rounded-[24px]">
           <div className="flex-1">
             <textarea
               ref={textareaRef}
               rows={1}
-              className="max-h-40 min-h-[46px] w-full resize-none bg-transparent px-2 py-3 text-sm leading-6 text-slate-900 outline-none placeholder:text-slate-400 dark:text-white sm:min-h-[50px]"
+              className="max-h-40 min-h-[44px] w-full resize-none bg-transparent px-3 py-2 text-[14.5px] leading-6 text-slate-800 outline-none placeholder:text-slate-400 dark:text-slate-100 sm:min-h-[46px]"
               value={input}
               placeholder={
                 listening
@@ -144,10 +143,10 @@ function InputBox({ onSend, loading, disabled = false }) {
             type="button"
             onClick={toggleMic}
             disabled={loading || disabled}
-            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-white shadow-sm transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white shadow-sm transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
               listening
-                ? "bg-red-600 hover:bg-red-700"
-                : "bg-slate-700 hover:bg-slate-800 dark:bg-slate-700 dark:hover:bg-slate-600"
+                ? "bg-red-600 hover:bg-red-700 animate-pulse-soft"
+                : "bg-slate-700 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-705"
             }`}
             aria-label={listening ? "Stop microphone" : "Start microphone"}
             title={listening ? "Stop microphone" : "Start microphone"}
@@ -155,12 +154,12 @@ function InputBox({ onSend, loading, disabled = false }) {
             {listening ? (
               // Mic Off Icon
               <svg
-                width="19"
-                height="19"
+                width="18"
+                height="18"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
-                strokeWidth="2"
+                strokeWidth="2.5"
               >
                 <line x1="2" y1="2" x2="22" y2="22" />
                 <path d="M9 9v3a3 3 0 0 0 5.12 2.12" />
@@ -173,12 +172,12 @@ function InputBox({ onSend, loading, disabled = false }) {
             ) : (
               // Mic Icon
               <svg
-                width="19"
-                height="19"
+                width="18"
+                height="18"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
-                strokeWidth="2"
+                strokeWidth="2.5"
               >
                 <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3Z" />
                 <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
@@ -188,34 +187,56 @@ function InputBox({ onSend, loading, disabled = false }) {
             )}
           </button>
 
-          {/* Send Button */}
-          <button
-            type="button"
-            onClick={handleSend}
-            disabled={loading || disabled || !input.trim()}
-            className="bg-accent hover:bg-accent-dark flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-white shadow-sm transition-all disabled:cursor-not-allowed disabled:opacity-50"
-            aria-label="Send message"
-            title="Send message"
-          >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
+          {/* Send / Stop Button — swaps to Stop while a response is generating */}
+          {loading ? (
+            <button
+              type="button"
+              onClick={onStop}
+              className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-900 text-white shadow-sm transition-all hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200 cursor-pointer"
+              aria-label="Stop generating"
+              title="Stop generating"
             >
-              <path d="M22 2 11 13" />
-              <path d="m22 2-7 20-4-9-9-4Z" />
-            </svg>
-          </button>
+              <span
+                className="absolute inset-0 animate-spin rounded-xl border-2 border-transparent border-t-current opacity-40"
+                aria-hidden="true"
+              />
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12" rx="1.5" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={disabled || !input.trim()}
+              className="bg-accent hover:bg-accent-dark flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white shadow-sm transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label="Send message"
+              title="Send message"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+              >
+                <path d="M22 2 11 13" />
+                <path d="m22 2-7 20-4-9-9-4Z" />
+              </svg>
+            </button>
+          )}
         </div>
 
         {listening && (
-          <p className="mt-2 px-2 text-xs font-medium text-red-500">
+          <p className="mt-2 px-3 text-xs font-semibold text-red-500 animate-pulse-soft">
             Listening... speak now
           </p>
         )}
+
+        <p className="mt-2 text-center text-[11px] text-slate-400 dark:text-slate-500 leading-normal">
+          EduBot connects directly to your college RAG database. Please double-check critical regulations.
+        </p>
       </div>
     </div>
   );

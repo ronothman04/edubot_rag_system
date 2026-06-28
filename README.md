@@ -1,12 +1,12 @@
 # EduBot
 
-EduBot is a React + FastAPI RAG chatbot for asking questions about uploaded college documents. The backend handles document ingestion, OCR, embeddings, ChromaDB vector search, Groq LLM responses, and Supabase admin/auth integration. The frontend provides the chat UI, authentication, admin dashboard, document upload, analytics, and settings.
+EduBot is a React + FastAPI RAG chatbot for asking questions about uploaded college documents. The backend handles document ingestion, OCR, embeddings, ChromaDB vector search, local Ollama LLM responses, and Supabase admin/auth integration. The frontend provides the chat UI, authentication, admin dashboard, document upload, analytics, and settings.
 
 ## Project Structure
 
 ```text
 EduBot-final(OCR)/
-├── backend/                 # FastAPI API, RAG, OCR, ChromaDB, Groq integration
+├── backend/                 # FastAPI API, RAG, OCR, ChromaDB, Ollama integration
 │   ├── api.py               # Main backend API
 │   ├── requirements.txt     # Python dependencies
 │   ├── .env.example         # Backend environment template
@@ -26,7 +26,7 @@ Install these before running the project:
 - Node.js 20 or newer
 - npm
 - Tesseract OCR
-- A Groq API key
+- Ollama running locally with the configured model
 - A Supabase project with anon and service role keys
 
 Install Tesseract:
@@ -85,8 +85,10 @@ cp .env.example .env
 Edit `backend/.env`:
 
 ```env
-GROQ_API_KEY=your_groq_api_key_here
-GROQ_MODEL=llama-3.1-8b-instant
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.2:3b
+OLLAMA_TIMEOUT=120
+OLLAMA_NUM_CTX=4096
 SUPABASE_URL=https://your-project-ref.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key_here
 FRONTEND_URL=http://localhost:5173
@@ -94,8 +96,8 @@ FRONTEND_URL=http://localhost:5173
 
 Notes:
 
-- `GROQ_API_KEY` is required for chat responses.
-- `GROQ_MODEL` is optional. If omitted, the backend uses `llama-3.1-8b-instant`.
+- Ollama must be running before chat responses can be generated.
+- `OLLAMA_MODEL` must be pulled locally, for example `ollama pull llama3.2:3b`.
 - `SUPABASE_SERVICE_ROLE_KEY` must stay private. Do not expose it in the frontend.
 - `FRONTEND_URL` must match the Vite dev server URL so CORS works.
 
@@ -241,12 +243,13 @@ These folders are runtime data and are ignored by Git.
 
 ## 8. Common Issues
 
-### `GROQ_API_KEY is missing`
+### Ollama request failed
 
-Create or fix `backend/.env` and make sure it contains:
+Make sure Ollama is running and the configured model is available:
 
-```env
-GROQ_API_KEY=your_groq_api_key_here
+```bash
+ollama serve
+ollama pull llama3.2:3b
 ```
 
 Restart the backend after changing `.env`.
@@ -322,4 +325,4 @@ npm run lint
 
 - Never commit real `.env` files.
 - Keep the Supabase service role key only in `backend/.env`.
-- If keys were shared publicly, rotate them in Groq and Supabase.
+- If keys were shared publicly, rotate them in Supabase and any other affected services.
