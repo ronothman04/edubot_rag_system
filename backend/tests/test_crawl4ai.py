@@ -210,9 +210,14 @@ def test_chroma_insertion():
         assert meta["source_type"] == "website"
         assert meta["crawl_method"] == "crawl4ai"
         assert "crawl_timestamp" in meta
-        assert meta["document_year"] == 2026
-        assert meta["document_date"] == "2026-06-12"
-        print("✓ PASS - Crawled page successfully stored in ChromaDB with metadata preserved")
+        # Honest dates (ingestion audit Fix B): an undated crawled page must NOT be
+        # stamped with a fabricated current-year/date. With no year derivable from
+        # the page identifiers, document_year stays the honest "general" sentinel
+        # and document_date stays empty, so freshness ranking gives it no false
+        # recency boost. A crawl timestamp is recorded separately (above).
+        assert meta["document_year"] == "general"
+        assert meta["document_date"] == ""
+        print("✓ PASS - Crawled page stored with honest (non-fabricated) date metadata")
     finally:
         # Teardown: this test writes into the real ChromaDB collection, so remove
         # the synthetic chunk and rebuild the BM25 index to leave the database

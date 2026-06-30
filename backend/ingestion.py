@@ -41,6 +41,13 @@ from langchain_community.document_loaders import (
 
 try:
     from PIL import Image, ImageOps, ImageFilter
+    # Decompression-bomb guard: cap the pixel count Pillow will decode. A small
+    # crafted image header can claim enormous dimensions and exhaust memory on
+    # decode. Default ~64 MP (covers an A3 page at 300 DPI); override via env.
+    try:
+        Image.MAX_IMAGE_PIXELS = int(os.getenv("MAX_IMAGE_PIXELS", str(64_000_000)))
+    except Exception:
+        pass
 except Exception:
     Image = None
     ImageOps = None
@@ -61,6 +68,7 @@ from rag.freshness import (
     parse_document_date,
     parse_document_year,
 )
+from rag.text_utils import normalize_ligatures
 
 # =============================================================================
 # CRAWL JOB MANAGEMENT & HELPER FUNCTIONS
@@ -578,6 +586,57 @@ def create_robust_session(headers: dict = None) -> requests.Session:
     return session
 
 
+# Maximum bytes accepted for any single crawled page/document. Caps memory use
+# and defends against oversized files and decompression bombs (iter_content yields
+# already-decompressed bytes, so the cap applies to the DECODED size). Override
+# via MAX_DOWNLOAD_BYTES; default 50 MB comfortably covers college prospectuses.
+MAX_DOWNLOAD_BYTES = int(os.getenv("MAX_DOWNLOAD_BYTES", str(50 * 1024 * 1024)))
+
+# Memory-safety cap on per-PDF page processing (rendering + OCR is expensive). A
+# crafted/huge PDF beyond this many pages has the remainder skipped. Override via
+# MAX_PDF_PAGES; default 2000 covers any real college document.
+MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "2000"))
+
+# ZIP-expansion (decompression-bomb) protection for ZIP-based Office formats
+# (DOCX, XLSX, PPTX). Limits are generous for real college documents but reject
+# crafted archives that explode on decompression. All overridable via env.
+MAX_ARCHIVE_MEMBERS = int(os.getenv("MAX_ARCHIVE_MEMBERS", "10000"))
+MAX_ARCHIVE_MEMBER_BYTES = int(os.getenv("MAX_ARCHIVE_MEMBER_BYTES", str(100 * 1024 * 1024)))
+MAX_ARCHIVE_TOTAL_BYTES = int(os.getenv("MAX_ARCHIVE_TOTAL_BYTES", str(500 * 1024 * 1024)))
+MAX_ARCHIVE_COMPRESSION_RATIO = float(os.getenv("MAX_ARCHIVE_COMPRESSION_RATIO", "200"))
+# Below this uncompressed size the ratio check is skipped: small, legitimately
+# repetitive Office XML can have a high ratio yet be harmless.
+_ARCHIVE_RATIO_MIN_BYTES = 10 * 1024 * 1024
+
+
+def _read_response_with_size_cap(response, url: str):
+    """Buffer a streamed response body up to MAX_DOWNLOAD_BYTES, raising when the
+    advertised or actual (decompressed) size exceeds the cap. Sets ``_content`` so
+    callers can use ``response.content``/``response.text`` normally afterwards."""
+    advertised = response.headers.get("Content-Length")
+    if advertised and advertised.isdigit() and int(advertised) > MAX_DOWNLOAD_BYTES:
+        response.close()
+        raise ValueError(
+            f"Refusing {url!r}: Content-Length {int(advertised)} exceeds "
+            f"{MAX_DOWNLOAD_BYTES}-byte download cap."
+        )
+    total = 0
+    parts: list[bytes] = []
+    for part in response.iter_content(chunk_size=65536):
+        if not part:
+            continue
+        total += len(part)
+        if total > MAX_DOWNLOAD_BYTES:
+            response.close()
+            raise ValueError(
+                f"Refusing {url!r}: download exceeded {MAX_DOWNLOAD_BYTES}-byte cap."
+            )
+        parts.append(part)
+    response._content = b"".join(parts)
+    response._content_consumed = True
+    return response
+
+
 def fetch_with_ssl_fallback(session, url: str, **kwargs):
     """GET ``url``, retrying once with TLS verification disabled if the host
     presents an invalid/mismatched certificate.
@@ -587,9 +646,14 @@ def fetch_with_ssl_fallback(session, url: str, **kwargs):
     raises ``SSLError`` and the whole crawl aborts. On that specific failure we
     retry with ``verify=False`` and log a clear warning so the insecure fetch is
     visible. Any other error propagates unchanged.
+
+    The body is streamed and size-capped (see ``_read_response_with_size_cap``)
+    so a single oversized file or decompression bomb cannot exhaust memory.
     """
+    # Stream so the size cap can abort before the whole body is buffered.
+    kwargs.setdefault("stream", True)
     try:
-        return session.get(url, **kwargs)
+        response = session.get(url, **kwargs)
     except requests.exceptions.SSLError as ssl_err:
         print(
             f"[WEBSITE] SSL verification failed for {url}: {ssl_err}. "
@@ -599,7 +663,8 @@ def fetch_with_ssl_fallback(session, url: str, **kwargs):
         # Silence the expected InsecureRequestWarning for this deliberate retry.
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            return session.get(url, **kwargs)
+            response = session.get(url, **kwargs)
+    return _read_response_with_size_cap(response, url)
 
 
 
@@ -656,6 +721,7 @@ def clean_loaded_text(text: str) -> str:
 
     text = str(text)
     text = text.replace("\x00", " ")
+    text = normalize_ligatures(text)
     text = repair_pdf_mixed_case_terms(text)
     text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -1099,11 +1165,111 @@ def chunk_text(
             continue
         if re.fullmatch(r"[^a-zA-Z]+", chunk):
             continue
-        if word_count(chunk) < MIN_CHUNK_WORDS:
+        # Drop tiny fragments, but NEVER discard a short chunk that carries a
+        # high-value fact (a phone/email, a fee/amount, a percentage, or a named
+        # role like "Principal: ..."). Such records are often < MIN_CHUNK_WORDS
+        # yet are exactly what users ask for; silently dropping them removed real
+        # answers from the knowledge base.
+        if word_count(chunk) < MIN_CHUNK_WORDS and not is_valuable_short_chunk(chunk):
             continue
         final_chunks.append(chunk)
 
     return final_chunks
+
+
+# Signals that a short chunk still carries a fact worth keeping (contact details,
+# fees/amounts, percentages, or a named office-holder). Used to exempt such
+# chunks from the MIN_CHUNK_WORDS floor so short factual records are not lost.
+_VALUABLE_SHORT_PATTERNS = (
+    re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),                 # email
+    re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)"),             # phone number
+    re.compile(r"[₹$]\s?\d", re.IGNORECASE),                     # currency amount
+    re.compile(r"\b\d+(?:\.\d+)?\s?%"),                          # percentage
+    re.compile(r"\b(?:rs\.?|inr|fee|fees)\b.*?\d", re.IGNORECASE),  # fee figure
+    re.compile(
+        r"\b(?:principal|vice[- ]?principal|hod|head of department|warden|"
+        r"director|coordinator|co-ordinator|registrar|dean|secretary|"
+        r"chairperson|in[- ]?charge)\b\s*[:\-]\s*\S",
+        re.IGNORECASE,
+    ),                                                           # named role label, e.g. "Warden - Fr. X"
+)
+
+
+def is_valuable_short_chunk(text: str) -> bool:
+    """True when a short chunk still holds a contact, fee, percentage, or named
+    role and should bypass the MIN_CHUNK_WORDS floor."""
+    text = str(text or "")
+    if not text.strip():
+        return False
+    return any(pattern.search(text) for pattern in _VALUABLE_SHORT_PATTERNS)
+
+
+# Header overhead (Title/Source/Section lines) added to every embedding text.
+# Reserved against the model token budget so the chunk body still fits once the
+# header is prepended at embed time.
+_EMBED_HEADER_TOKEN_RESERVE = 48
+
+
+def split_chunks_for_embedding(chunks: list[str]) -> list[str]:
+    """
+    Forward-only safeguard against silent embedding truncation.
+
+    The embedding model (BGE-base) has a 512-token cap and SentenceTransformer
+    truncates silently, so a long table/list chunk loses its tail from the
+    vector (measured: ~8% of chunks exceeded 512 tokens). Split any chunk whose
+    tokenised length (plus the header reserve) exceeds the model budget so the
+    full content is embedded across multiple chunks instead of being dropped.
+
+    Best-effort: if the tokenizer is unavailable (e.g. model not loaded in a unit
+    test), the chunks are returned unchanged — never raises.
+    """
+    if not chunks:
+        return chunks
+    try:
+        from embeddings import get_embedding_model
+
+        model = get_embedding_model()
+        tokenizer = model.tokenizer
+        budget = int(getattr(model, "max_seq_length", 512) or 512) - _EMBED_HEADER_TOKEN_RESERVE
+    except Exception:
+        return chunks
+    if budget <= 0:
+        return chunks
+
+    out: list[str] = []
+    for chunk in chunks:
+        try:
+            n_tokens = len(tokenizer.encode(chunk, add_special_tokens=True))
+        except Exception:
+            out.append(chunk)
+            continue
+        if n_tokens <= budget:
+            out.append(chunk)
+            continue
+
+        approx_chars = max(200, int(len(chunk) * budget / max(n_tokens, 1)))
+        splitter = RecursiveCharacterTextSplitter(
+            separators=["\n\n", "\n", ". ", " ", ""],
+            chunk_size=approx_chars,
+            chunk_overlap=min(CHUNK_OVERLAP, approx_chars // 5),
+            length_function=len,
+        )
+        for sub in splitter.split_text(chunk):
+            sub = sub.strip()
+            if not sub:
+                continue
+            try:
+                sub_ids = tokenizer.encode(sub, add_special_tokens=True)
+                if len(sub_ids) > budget:
+                    # Last-resort hard cap for pathologically dense fragments.
+                    sub = tokenizer.decode(
+                        sub_ids[1 : budget - 1], skip_special_tokens=True
+                    ).strip()
+            except Exception:
+                pass
+            if sub:
+                out.append(sub)
+    return out
 
 
 # =============================================================================
@@ -1262,6 +1428,72 @@ def _table_to_text(table: list[list]) -> str:
     return clean_loaded_text("\n".join(output))
 
 
+def _extract_prose_and_tables(page) -> tuple[str, list[str], int]:
+    """
+    Extract a PDF page's prose and tables WITHOUT duplicating table content.
+
+    pdfplumber's ``extract_text()`` already flattens table cells into the running
+    text, so the previous code (extract_text() + extract_tables() both appended)
+    embedded every table twice. Here we locate the table regions, pull the prose
+    with those regions excluded, then append each table once as structured
+    markdown (which retrieves better than flattened cells).
+
+    Returns ``(prose_without_tables, [table_markdown, ...], table_count)``. On any
+    failure it falls back to the plain prose + structured tables (still correct,
+    just possibly with the old duplication) so a page is never dropped.
+    """
+    try:
+        found = page.find_tables() or []
+    except Exception:
+        found = []
+
+    table_texts: list[str] = []
+    for tbl in found:
+        try:
+            rendered = _table_to_text(tbl.extract())
+        except Exception:
+            rendered = ""
+        if rendered:
+            table_texts.append(rendered)
+
+    if not found:
+        # No tables detected — plain prose, nothing to deduplicate.
+        try:
+            return (page.extract_text() or "", [], 0)
+        except Exception:
+            return ("", [], 0)
+
+    # Build the prose with table-bbox characters removed so cell text is not
+    # repeated alongside the structured tables.
+    bboxes = []
+    for tbl in found:
+        try:
+            x0, top, x1, bottom = tbl.bbox
+            bboxes.append((float(x0), float(top), float(x1), float(bottom)))
+        except Exception:
+            continue
+
+    def _outside_tables(obj) -> bool:
+        cx = (obj.get("x0", 0) + obj.get("x1", 0)) / 2.0
+        cy = (obj.get("top", 0) + obj.get("bottom", 0)) / 2.0
+        for x0, top, x1, bottom in bboxes:
+            if x0 <= cx <= x1 and top <= cy <= bottom:
+                return False
+        return True
+
+    try:
+        prose = page.filter(_outside_tables).extract_text() or ""
+    except Exception:
+        # Filtering failed: keep prose but drop the structured tables to avoid the
+        # double-extraction (cell text already lives in the prose).
+        try:
+            return (page.extract_text() or "", [], 0)
+        except Exception:
+            return ("", table_texts, len(table_texts))
+
+    return (prose, table_texts, len(table_texts))
+
+
 def _dataframe_to_text(df: pd.DataFrame) -> str:
     if df.empty:
         return ""
@@ -1378,6 +1610,16 @@ def load_pdf_bytes(
 
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         total_pages = len(pdf.pages)
+        # Memory-safety cap: a crafted PDF can claim a huge page count and exhaust
+        # memory/CPU during per-page rendering+OCR. Process at most MAX_PDF_PAGES
+        # (override via env); the rest are skipped with a clear warning.
+        pages_to_process = pdf.pages
+        if total_pages > MAX_PDF_PAGES:
+            print(
+                f"[PDF] {filename}: {total_pages} pages exceeds MAX_PDF_PAGES="
+                f"{MAX_PDF_PAGES}; processing the first {MAX_PDF_PAGES} pages only."
+            )
+            pages_to_process = pdf.pages[:MAX_PDF_PAGES]
         pdf_metadata = pdf.metadata or {}
         pdf_metadata = {str(k): str(v) for k, v in pdf_metadata.items() if v is not None}
         if extra_metadata:
@@ -1385,7 +1627,7 @@ def load_pdf_bytes(
         pdf_metadata_text = " ".join(str(value or "") for value in pdf_metadata.values())
         pdf_document_date = metadata_date_value(pdf_metadata, pdf_metadata_text)
 
-        for page_index, page in enumerate(pdf.pages, start=1):
+        for page_index, page in enumerate(pages_to_process, start=1):
             if job_id:
                 wait_if_paused(job_id)
                 check_crawl_cancelled(job_id)
@@ -1394,23 +1636,17 @@ def load_pdf_bytes(
             tables_extracted = 0
             ocr_used = False
 
-            prose = clean_loaded_text(page.extract_text() or "")
+            prose, tables, tables_extracted = _extract_prose_and_tables(page)
 
             if prose:
-                page_parts.append(prose)
+                prose = clean_loaded_text(prose)
+                if prose:
+                    page_parts.append(prose)
 
-            try:
-                tables = page.extract_tables() or []
-            except Exception as e:
-                print(f"Table extraction failed on {filename}, page {page_index}: {e}")
-                tables = []
-
-            for table in tables:
-                table_text = clean_loaded_text(_table_to_text(table))
-
+            for table_text in tables:
+                table_text = clean_loaded_text(table_text)
                 if table_text:
                     page_parts.append(table_text)
-                    tables_extracted += 1
 
             combined_before_ocr = clean_loaded_text("\n\n".join(page_parts))
 
@@ -1480,12 +1716,17 @@ def load_image_bytes(file_bytes: bytes, filename: str, url: str = None) -> list[
 
     check_name = filename.lower()
     check_url = (url or "").lower()
-    skip_filename_terms = ["faculty", "staff", "teacher", "profile", "principal", "hod", "dean", "portrait", "avatar", "logo", "icon", "user", "employee"]
-    skip_url_terms = ["faculty", "profile", "staff", "teacher", "avatar", "logo"]
+    # Only skip clear non-content decorations (logos/icons/avatars). Person/path
+    # terms like "profile", "staff", "user" were previously dropped too, which
+    # silently discarded legitimate notices/posters served from such paths. True
+    # headshots with no text simply OCR to empty and are dropped below anyway, so
+    # this narrow list avoids losing real content. Small logos/icons are still
+    # caught by the size floor below.
+    skip_decoration_terms = ["logo", "icon", "avatar"]
 
-    if any(term in check_name for term in skip_filename_terms) or \
-       any(term in check_url for term in skip_url_terms):
-        print(f"[IMAGE] Skipped profile/logo image: {filename}")
+    if any(term in check_name for term in skip_decoration_terms) or \
+       any(term in check_url for term in skip_decoration_terms):
+        print(f"[IMAGE] Skipped logo/icon/avatar image: {filename}")
         return []
 
     try:
@@ -1496,16 +1737,14 @@ def load_image_bytes(file_bytes: bytes, filename: str, url: str = None) -> list[
 
     width, height = image.size
     area = width * height
-    aspect_ratio = width / height if height > 0 else 0
 
     if width < 400 or height < 300 or area < 120000:
         print(f"[IMAGE] Skipped small image ({width}x{height}): {filename}")
         return []
 
-    if 0.8 <= aspect_ratio <= 1.2:
-        print(f"[IMAGE] Skipped square image ({aspect_ratio:.2f}): {filename}")
-        return []
-
+    # Note: square images are NOT skipped here. Notices/posters/infographics are
+    # often square, and dropping them by aspect ratio discarded real text. Images
+    # with no text simply OCR to empty and are dropped below.
     text = run_ocr_on_image(image)
 
     if not text:
@@ -1525,7 +1764,61 @@ def load_image_bytes(file_bytes: bytes, filename: str, url: str = None) -> list[
     ]
 
 
+def validate_zip_archive_safety(file_path: str) -> None:
+    """
+    Guard ZIP-based Office files (DOCX/XLSX/PPTX) against decompression bombs by
+    inspecting the central directory BEFORE any member is decompressed. Raises
+    ValueError with a clear message when the archive exceeds the member count,
+    per-member size, total uncompressed size, or compression-ratio limits.
+
+    Reads only metadata (sizes from the ZIP directory), so it is cheap and never
+    expands the bomb. A non-ZIP file is ignored here — the format-specific loader
+    raises its own error.
+    """
+    import zipfile
+
+    name = os.path.basename(file_path)
+    try:
+        archive = zipfile.ZipFile(file_path)
+    except (zipfile.BadZipFile, OSError):
+        return  # not a valid zip; let the real loader surface the error
+
+    with archive:
+        infos = archive.infolist()
+        if len(infos) > MAX_ARCHIVE_MEMBERS:
+            raise ValueError(
+                f"Refusing {name}: archive has {len(infos)} members, exceeding the "
+                f"{MAX_ARCHIVE_MEMBERS}-member limit (possible zip bomb)."
+            )
+
+        total_uncompressed = 0
+        total_compressed = 0
+        for info in infos:
+            if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+                raise ValueError(
+                    f"Refusing {name}: member {info.filename!r} expands to "
+                    f"{info.file_size} bytes, exceeding the per-member "
+                    f"{MAX_ARCHIVE_MEMBER_BYTES}-byte limit (possible zip bomb)."
+                )
+            total_uncompressed += info.file_size
+            total_compressed += info.compress_size
+            if total_uncompressed > MAX_ARCHIVE_TOTAL_BYTES:
+                raise ValueError(
+                    f"Refusing {name}: total uncompressed size exceeds the "
+                    f"{MAX_ARCHIVE_TOTAL_BYTES}-byte limit (possible zip bomb)."
+                )
+
+        if total_compressed > 0 and total_uncompressed > _ARCHIVE_RATIO_MIN_BYTES:
+            ratio = total_uncompressed / total_compressed
+            if ratio > MAX_ARCHIVE_COMPRESSION_RATIO:
+                raise ValueError(
+                    f"Refusing {name}: compression ratio {ratio:.0f}x exceeds the "
+                    f"{MAX_ARCHIVE_COMPRESSION_RATIO:.0f}x limit (possible zip bomb)."
+                )
+
+
 def load_docx_file(file_path: str) -> list[Document]:
+    validate_zip_archive_safety(file_path)
     import docx
     doc = docx.Document(file_path)
     text = clean_loaded_text("\n".join([p.text for p in doc.paragraphs if p.text.strip()]))
@@ -1645,6 +1938,7 @@ def load_json_file(file_path: str) -> list[Document]:
 
 
 def load_xlsx_file(file_path: str) -> list[Document]:
+    validate_zip_archive_safety(file_path)
     documents: list[Document] = []
     excel_file = pd.ExcelFile(file_path)
     total_sheets = len(excel_file.sheet_names)
@@ -3082,6 +3376,9 @@ def ingest_documents(
             )
 
         chunks = chunk_text(text)
+        # Split any chunk that would overflow the embedding model's token budget
+        # so its full content is embedded (not silently truncated by the encoder).
+        chunks = split_chunks_for_embedding(chunks)
         candidate_chunks += len(chunks)
         char_search_start = 0
 
@@ -3089,7 +3386,11 @@ def ingest_documents(
             chunk_index = chunk_in_file_index
             chunk_in_file_index += 1
 
-            if len(chunk.split()) < MIN_CHUNK_WORDS:
+            # chunk_text() already enforced MIN_CHUNK_WORDS (with the
+            # high-value-short-chunk exemption). Re-apply the same exemption here
+            # rather than a blanket word-count drop, so short contact/fee/role
+            # records that legitimately passed chunking are not discarded now.
+            if len(chunk.split()) < MIN_CHUNK_WORDS and not is_valuable_short_chunk(chunk):
                 chunks_skipped += 1
                 continue
 
@@ -3119,18 +3420,36 @@ def ingest_documents(
                 else:
                     file_extension_val = doc.metadata.get("file_type") or "unknown"
 
+            # Document year/date must be HONEST. Keep the value the loader
+            # extracted, otherwise derive a year only from trusted identifier
+            # fields (filename / title / URL / section). If still unknown, store
+            # "general"/"" — never a fabricated current-year stamp. freshness.py
+            # treats an unknown year as "no recency boost"; a fake "2026" would
+            # make every undated old document masquerade as the freshest and
+            # corrupt freshness/authority conflict resolution (e.g. "current
+            # principal", "latest fee structure"). A crawl timestamp is likewise
+            # NOT a publication date, so it is never used as the fallback here.
             doc_year = doc.metadata.get("document_year")
-            if doc_year is None or doc_year == "" or doc_year == "general":
-                doc_year = 2026
-            else:
-                try:
-                    doc_year = int(doc_year)
-                except ValueError:
-                    doc_year = 2026
+            try:
+                doc_year = (
+                    int(doc_year)
+                    if str(doc_year).strip().lower() not in ("", "general", "none", "null")
+                    else None
+                )
+            except (TypeError, ValueError):
+                doc_year = None
+            if not doc_year:
+                derived_year = extract_year_from_text(
+                    doc_filename,
+                    doc.metadata.get("title"),
+                    source_url,
+                    section_title,
+                )
+                doc_year = derived_year if derived_year else "general"
 
             doc_date = doc.metadata.get("document_date")
-            if not doc_date or doc_date == "" or doc_date == "general":
-                doc_date = "2026-06-12"
+            if not doc_date or str(doc_date).strip().lower() in ("general", "none", "null"):
+                doc_date = ""
 
             metadata_dict = {
                 **{k: normalize_metadata_value(v) for k, v in doc.metadata.items()},
@@ -3209,12 +3528,25 @@ def ingest_documents(
             metadata = normalize_metadata(metadata_dict)
 
             import json
-            hashable_meta = {
-                k: v for k, v in metadata.items()
-                if k not in ("ingested_at", "crawl_timestamp")
+            # Chunk identity = content + STABLE source location only.
+            #
+            # Previously the hash mixed in nearly all metadata, so re-ingesting an
+            # unchanged document after an admin edited its department / document_type
+            # / year (or after total_pages shifted between crawls, or after the
+            # honest-date backfill) changed every chunk's hash -> new id -> needless
+            # re-embedding AND orphan-deletion churn. Restricting the hash to the
+            # content plus its source identity (filename / source_url / page /
+            # chunk_index) makes re-ingestion a true no-op when only classification
+            # metadata changed, while still keeping identical text from DIFFERENT
+            # sources distinct (different filename/source_url -> different hash), so
+            # distinct factual records are never collapsed.
+            identity = {
+                "filename": metadata.get("filename", ""),
+                "source_url": metadata.get("source_url", ""),
+                "page": metadata.get("page", 0),
+                "chunk_index": metadata.get("chunk_index", 0),
             }
-            metadata_json = json.dumps(hashable_meta, sort_keys=True)
-            combined_text = chunk + metadata_json
+            combined_text = chunk + json.dumps(identity, sort_keys=True)
             text_hash = hashlib.sha256(combined_text.encode("utf-8")).hexdigest()[:24]
             metadata["text_hash"] = text_hash
 
@@ -3372,7 +3704,19 @@ def ingest_documents(
         update_crawl_job(job_id, chunks_created=chunks_stored)
 
     # One-line explanation: Delete orphaned chunks (old chunks that are no longer present in the newly ingested document/page).
-    if not is_personal:
+    #
+    # SAFETY (partial-crawl data loss): a website crawl calls ingest_documents
+    # ONCE with crawl_base_url set, so existing_lookup_value is the WHOLE site.
+    # A recrawl that returns fewer pages — lower max_pages, reduced max_depth,
+    # transient network failures, skipped pages, or an early stop — must NOT be
+    # treated as "those pages were removed from the source". We therefore only
+    # prune stale chunks belonging to URLs we ACTUALLY revisited this run
+    # (source_urls_seen); chunks for pages not fetched this run are preserved.
+    # Uploads (no crawl_base_url) keep whole-file scope so a modified re-upload
+    # still replaces its own old chunks. A cancelled job skips pruning entirely.
+    is_crawl_scope = bool(crawl_base_url)
+    crawl_was_cancelled = bool(job_id) and should_cancel(job_id)
+    if not is_personal and not crawl_was_cancelled:
         try:
             existing_doc_res = collection.get(
                 where={existing_lookup_field: {"$eq": existing_lookup_value}},
@@ -3393,6 +3737,13 @@ def ingest_documents(
                     existing_text_hash and existing_text_hash in current_run_hashes
                 ):
                     continue
+                # For a crawl, only prune chunks whose own page was revisited this
+                # run. A chunk with a source_url we never fetched (or no source_url
+                # to verify) is left untouched — a partial crawl cannot delete it.
+                if is_crawl_scope:
+                    existing_source_url = str((meta or {}).get("source_url", "") or "")
+                    if existing_source_url not in source_urls_seen:
+                        continue
                 ids_to_delete.append(existing_doc_id)
             if ids_to_delete:
                 print(f"[INGEST] Deleting {len(ids_to_delete)} orphaned chunks for {existing_lookup_value}...")

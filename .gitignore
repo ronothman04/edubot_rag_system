@@ -16,6 +16,9 @@ backend/data/uploads/
 backend/chroma_db/
 chroma_db/
 
+# Migration snapshots (generated ChromaDB/BM25 backups)
+backend/data/backups/
+
 # Node / React
 node_modules/
 dist/

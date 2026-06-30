@@ -103,7 +103,7 @@ async def crawl_with_crawl4ai(
         should_skip_current_page, should_skip_current_document,
         safe_pdf_filename_from_url,
         load_pdf_bytes, load_file_from_path, UPLOAD_DIR, REQUEST_TIMEOUT_SECONDS,
-        metadata_year_value, metadata_date_value
+        metadata_year_value, metadata_date_value, fetch_with_ssl_fallback,
     )
     from crawler import extract_links
     import requests
@@ -252,7 +252,34 @@ async def crawl_with_crawl4ai(
                 
                 results = await crawler.arun_many(urls_to_crawl, config=config)
 
-                for (url, depth), result in zip(html_batch, results):
+                # arun_many() returns results in COMPLETION order, not input
+                # order, so zipping with html_batch paired each page's title and
+                # content with another page's URL (the source of mismatched
+                # source_url/title metadata, e.g. "Computer Science Department"
+                # stamped with the Education department URL). Pair every result
+                # to the page it ACTUALLY fetched via result.url instead.
+                depth_by_url = {normalize_url(u): d for u, d in html_batch}
+                # Mark every attempted URL visited up front so a redirect-changed
+                # result.url can never let the input URL be re-queued.
+                for _u, _ in html_batch:
+                    visited.add(normalize_url(_u))
+
+                for result in results:
+                    result_url = (
+                        getattr(result, "url", "")
+                        or getattr(result, "redirected_url", "")
+                        or ""
+                    )
+                    url = normalize_url(result_url) if result_url else ""
+                    if not url:
+                        continue
+                    depth = depth_by_url.get(
+                        url,
+                        depth_by_url.get(
+                            normalize_url(getattr(result, "redirected_url", "") or ""),
+                            0,
+                        ),
+                    )
                     visited.add(url)
                     urls_processed += 1
                     
@@ -506,7 +533,9 @@ async def crawl_with_crawl4ai(
                     print(f"INFO  Page discovered: {doc_url}")
 
                     try:
-                        response = session.get(doc_url, timeout=REQUEST_TIMEOUT_SECONDS)
+                        # Size-capped + SSL-fallback fetch (shared with the legacy
+                        # crawler) so an oversized file cannot exhaust memory.
+                        response = fetch_with_ssl_fallback(session, doc_url, timeout=REQUEST_TIMEOUT_SECONDS)
                         # requests follows redirects, so mark the final resolved URL
                         # visited too — prevents a redundant re-fetch if that URL is
                         # later discovered as a link on another page.
