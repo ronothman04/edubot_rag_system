@@ -25,6 +25,7 @@ def main() -> None:
     logging.disable(logging.CRITICAL)
     from db import collection
     from embeddings import get_embedding_model
+    from ingestion import build_embedding_text
 
     model = get_embedding_model()
     tokenizer = model.tokenizer
@@ -34,11 +35,9 @@ def main() -> None:
     rows = []
     for doc, meta in zip(got["documents"], got["metadatas"]):
         meta = meta or {}
-        et = (
-            f"Title: {meta.get('title', '')}\n"
-            f"Source: {meta.get('filename', '')}\n"
-            f"Section: {meta.get('heading', '')}\n\n{doc}"
-        )
+        # Measure the ACTUAL embedding text (header capped exactly as at ingest),
+        # so this reflects real truncation rather than the pre-cap header length.
+        et = build_embedding_text(doc, meta)
         n = len(tokenizer.encode(et))
         if n > budget:
             rows.append((n, str(meta.get("filename"))[:48], str(meta.get("chunk_type"))))

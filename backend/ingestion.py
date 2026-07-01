@@ -1209,6 +1209,48 @@ def is_valuable_short_chunk(text: str) -> bool:
 # header is prepended at embed time.
 _EMBED_HEADER_TOKEN_RESERVE = 48
 
+# Overlap (in tokens) between adjacent token-windows when an atomic fragment has
+# to be split purely by token position. Keeps some context continuity across the
+# window boundary.
+_TOKEN_WINDOW_OVERLAP = 32
+
+
+def _token_window_split(text: str, tokenizer, budget: int) -> list[str]:
+    """Split ``text`` into overlapping token windows that each fit ``budget``
+    tokens, decoding every window back to text so that NO token is dropped.
+
+    This is the last resort for a fragment the separator-based splitter could not
+    reduce below the embedding cap — a single dense unit (one long line, one table
+    row, one list) with no usable separator near the boundary. The previous
+    behaviour hard-capped such a fragment by decoding only the first ``budget``
+    tokens, silently discarding the tail from the embedding. Windowing instead
+    guarantees full coverage: the union of the returned windows spans the entire
+    input, so the whole fragment is embedded across several pieces.
+    """
+    try:
+        ids = tokenizer.encode(text, add_special_tokens=False)
+    except Exception:
+        return [text]
+    # Reserve 2 slots so re-encoding a window WITH special tokens still fits budget.
+    window = max(1, budget - 2)
+    if len(ids) <= window:
+        return [text]
+    step = max(1, window - _TOKEN_WINDOW_OVERLAP)
+    pieces: list[str] = []
+    for start in range(0, len(ids), step):
+        window_ids = ids[start : start + window]
+        if not window_ids:
+            break
+        try:
+            piece = tokenizer.decode(window_ids, skip_special_tokens=True).strip()
+        except Exception:
+            piece = ""
+        if piece:
+            pieces.append(piece)
+        if start + window >= len(ids):
+            break
+    return pieces or [text]
+
 
 def split_chunks_for_embedding(chunks: list[str]) -> list[str]:
     """
@@ -1260,16 +1302,56 @@ def split_chunks_for_embedding(chunks: list[str]) -> list[str]:
                 continue
             try:
                 sub_ids = tokenizer.encode(sub, add_special_tokens=True)
-                if len(sub_ids) > budget:
-                    # Last-resort hard cap for pathologically dense fragments.
-                    sub = tokenizer.decode(
-                        sub_ids[1 : budget - 1], skip_special_tokens=True
-                    ).strip()
             except Exception:
-                pass
-            if sub:
                 out.append(sub)
+                continue
+            if len(sub_ids) <= budget:
+                out.append(sub)
+                continue
+            # The separator-based splitter could not get this fragment under
+            # budget (an atomic dense unit with no usable split point near the
+            # boundary). Cover it with overlapping token windows so every token
+            # is embedded — never silently drop the tail as the old hard cap did.
+            out.extend(_token_window_split(sub, tokenizer, budget))
     return out
+
+
+def build_embedding_text(chunk: str, meta: dict | None = None) -> str:
+    """Compose the ``Title/Source/Section``-headed text that is embedded for a chunk.
+
+    The header is only a retrieval hint; the chunk *body* carries the answer. A
+    few documents have very long titles/headings whose header ALONE exceeded the
+    token reserve (measured 51-119 tokens vs. a 48-token reserve), pushing the
+    full embedding text past the model's 512-token cap and silently truncating
+    the body's tail from the vector even though the body itself fits. We therefore
+    cap the header at ``_EMBED_HEADER_TOKEN_RESERVE`` tokens so that, combined with
+    a body kept under ``cap - reserve`` by ``split_chunks_for_embedding``, the
+    whole body is always embedded.
+
+    Best-effort and no-op for normal chunks: a header already within the reserve
+    is returned byte-for-byte unchanged (identical embedding), so only the handful
+    of long-header chunks are affected. If the tokenizer is unavailable (unit-test
+    path) the plain header is used and nothing is capped.
+    """
+    meta = meta or {}
+    header = (
+        f"Title: {meta.get('title', '')}\n"
+        f"Source: {meta.get('filename', '')}\n"
+        f"Section: {meta.get('heading', '')}\n\n"
+    )
+    try:
+        from embeddings import get_embedding_model
+
+        tokenizer = get_embedding_model().tokenizer
+        header_ids = tokenizer.encode(header, add_special_tokens=False)
+        if len(header_ids) > _EMBED_HEADER_TOKEN_RESERVE:
+            capped = tokenizer.decode(
+                header_ids[:_EMBED_HEADER_TOKEN_RESERVE], skip_special_tokens=True
+            ).rstrip()
+            header = f"{capped}\n\n"
+    except Exception:
+        pass
+    return f"{header}{chunk}"
 
 
 # =============================================================================
@@ -3571,12 +3653,7 @@ def ingest_documents(
                 continue
             bucket.append(chunk_simhash)
 
-            embedding_text = (
-                f"Title: {metadata.get('title', '')}\n"
-                f"Source: {metadata.get('filename', '')}\n"
-                f"Section: {metadata.get('heading', '')}\n\n"
-                f"{chunk}"
-            )
+            embedding_text = build_embedding_text(chunk, metadata)
 
             chunk_id = (
                 f"personal_{safe_user_id}_{safe_session_id}_{safe_filename}"

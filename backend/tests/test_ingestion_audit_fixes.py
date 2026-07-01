@@ -89,6 +89,89 @@ class TestEmbeddingTokenBudget:
         small = ["short clean passage of text", "another small passage here"]
         assert ingestion.split_chunks_for_embedding(small) == small
 
+    def test_atomic_dense_blob_is_windowed_not_truncated(self):
+        """M-4: a single dense unit with no separator near the 512 boundary must
+        be covered by overlapping token windows (every piece under budget) — not
+        hard-capped, which silently dropped the tail from the embedding."""
+        try:
+            from embeddings import get_embedding_model
+            model = get_embedding_model()
+            tokenizer = model.tokenizer
+            budget = int(getattr(model, "max_seq_length", 512) or 512)
+        except Exception:
+            pytest.skip("embedding model not available locally")
+
+        # One continuous line, no whitespace the separator splitter can use.
+        blob = "".join(f"token{i}." for i in range(900))
+        before = len(tokenizer.encode(blob, add_special_tokens=True))
+        assert before > budget  # precondition: genuinely oversized and atomic
+
+        out = ingestion.split_chunks_for_embedding([blob])
+        assert len(out) >= 2  # was 1 (hard-cap drop) before the fix
+        reserve = ingestion._EMBED_HEADER_TOKEN_RESERVE
+        for piece in out:
+            assert len(tokenizer.encode(piece, add_special_tokens=True)) <= budget - reserve + 1
+
+        # Full coverage: the last part of the blob survives in some window
+        # (the old hard cap dropped exactly this tail).
+        assert "token899" in "".join(out)
+
+    def test_long_header_capped_so_full_embedding_text_fits(self):
+        """M-4 real root cause: for 28 chunks the header (long title/heading) was
+        51-119 tokens (>48 reserve), so the full embedding text exceeded 512 and
+        the BODY tail was truncated even though the body fit. build_embedding_text
+        must cap the header so the full text stays within the model cap."""
+        try:
+            from embeddings import get_embedding_model
+            model = get_embedding_model()
+            tokenizer = model.tokenizer
+            cap = int(getattr(model, "max_seq_length", 512) or 512)
+        except Exception:
+            pytest.skip("embedding model not available locally")
+
+        reserve = ingestion._EMBED_HEADER_TOKEN_RESERVE
+        meta = {
+            "title": "Programme " * 60,   # pathologically long header fields
+            "filename": "College_Handbook_2023_24.pdf",
+            "heading": "Rules and Regulations " * 20,
+        }
+        # Header alone must be capped to the reserve (this is the fix's contract).
+        header_only = ingestion.build_embedding_text("", meta)
+        header_tokens = len(tokenizer.encode(header_only, add_special_tokens=False))
+        assert header_tokens <= reserve, f"header {header_tokens} tok exceeds reserve {reserve}"
+
+        # With a body already under the body budget, the full text fits the cap —
+        # and the body tail is NOT dropped.
+        body = " ".join(f"clause{i}" for i in range(150))  # comfortably < cap-reserve
+        assert len(tokenizer.encode(body, add_special_tokens=True)) <= cap - reserve
+        emb = ingestion.build_embedding_text(body, meta)
+        total = len(tokenizer.encode(emb, add_special_tokens=True))
+        assert total <= cap, f"embedding text {total} tok exceeds cap {cap}"
+        assert "clause149" in emb  # tail preserved
+
+    def test_short_header_unchanged(self):
+        meta = {"title": "Fees", "filename": "prospectus.pdf", "heading": "Tuition"}
+        emb = ingestion.build_embedding_text("the annual fee is 5000", meta)
+        assert emb == (
+            "Title: Fees\nSource: prospectus.pdf\nSection: Tuition\n\n"
+            "the annual fee is 5000"
+        )
+
+    def test_token_window_split_covers_all_tokens(self):
+        try:
+            from embeddings import get_embedding_model
+            tokenizer = get_embedding_model().tokenizer
+        except Exception:
+            pytest.skip("embedding model not available locally")
+        text = " ".join(f"w{i}" for i in range(1500))
+        pieces = ingestion._token_window_split(text, tokenizer, budget=200)
+        assert len(pieces) >= 2
+        for piece in pieces:
+            assert len(tokenizer.encode(piece, add_special_tokens=False)) <= 200
+        # first and last tokens both represented
+        joined = " ".join(pieces)
+        assert "w0" in joined and "w1499" in joined
+
 
 # ---------------------------------------------------------------------------
 # Fix E — download size cap

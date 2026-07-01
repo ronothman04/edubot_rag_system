@@ -38,13 +38,11 @@ sys.path.insert(0, BASE_DIR)
 
 
 def _embedding_text(chunk: str, meta: dict) -> str:
-    """Must match ingestion.ingest_documents' embedding-text format exactly."""
-    return (
-        f"Title: {meta.get('title', '')}\n"
-        f"Source: {meta.get('filename', '')}\n"
-        f"Section: {meta.get('heading', '')}\n\n"
-        f"{chunk}"
-    )
+    """Must match ingestion.ingest_documents' embedding-text format exactly
+    (delegates to the canonical builder, which caps an over-long header)."""
+    from ingestion import build_embedding_text
+
+    return build_embedding_text(chunk, meta)
 
 
 def main() -> None:
