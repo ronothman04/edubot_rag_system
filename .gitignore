@@ -19,6 +19,15 @@ chroma_db/
 # Migration snapshots (generated ChromaDB/BM25 backups)
 backend/data/backups/
 
+# Generated RAG index + runtime caches/state.
+# These are regenerated on the deployment host from the (also-gitignored) chroma_db
+# vector store via rebuild_bm25_index(); a committed copy can never match a fresh
+# clone and only bloats history. Treat exactly like chroma_db/.
+backend/data/bm25_index.pkl
+backend/data/retrieval_cache.json
+backend/data/response_cache.json
+backend/data/crawl_jobs.json
+
 # Node / React
 node_modules/
 dist/
