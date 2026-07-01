@@ -115,7 +115,7 @@ function InputBox({ onSend, onStop, loading, disabled = false }) {
   return (
     <div className="border-t border-slate-200/80 bg-white/95 px-3 py-3.5 backdrop-blur transition-colors dark:border-slate-800/80 dark:bg-slate-950/95 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-4xl w-full">
-        <div className="flex items-end gap-2 rounded-[20px] border border-slate-250 bg-white p-1.5 shadow-sm transition-all focus-within:border-blue-500/30 focus-within:ring-2 focus-within:ring-blue-500/10 dark:border-slate-800 dark:bg-slate-900 sm:gap-3 sm:rounded-[24px]">
+        <div className="flex items-end gap-2 rounded-[20px] border border-slate-200 bg-white p-1.5 shadow-sm transition-all focus-within:border-blue-500/30 focus-within:ring-2 focus-within:ring-blue-500/10 dark:border-slate-800 dark:bg-slate-900 sm:gap-3 sm:rounded-[24px]">
           <div className="flex-1">
             <textarea
               ref={textareaRef}
@@ -146,7 +146,7 @@ function InputBox({ onSend, onStop, loading, disabled = false }) {
             className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white shadow-sm transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
               listening
                 ? "bg-red-600 hover:bg-red-700 animate-pulse-soft"
-                : "bg-slate-700 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-705"
+                : "bg-slate-700 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700"
             }`}
             aria-label={listening ? "Stop microphone" : "Start microphone"}
             title={listening ? "Stop microphone" : "Start microphone"}

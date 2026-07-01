@@ -106,7 +106,7 @@ function CodeBlock({ children, className }) {
 
   return (
     <div className="my-4 overflow-hidden rounded-xl border border-slate-200 bg-slate-900 shadow-sm dark:border-slate-800">
-      <div className="flex items-center justify-between bg-slate-800/80 px-4 py-1.5 text-xs text-slate-350 dark:bg-slate-900 select-none">
+      <div className="flex items-center justify-between bg-slate-800/80 px-4 py-1.5 text-xs text-slate-400 dark:bg-slate-900 select-none">
         <span className="font-semibold uppercase tracking-wider">{language || "code"}</span>
         <button
           type="button"
@@ -410,7 +410,7 @@ function TypingAssistantMarkdown({ content, speed = 10, onDone }) {
       <AssistantMarkdown content={displayedContent} />
 
       {isTyping && (
-        <span className="ml-1 inline-block h-4 w-2 animate-pulse rounded-sm bg-slate-500 align-middle dark:bg-slate-350" />
+        <span className="ml-1 inline-block h-4 w-2 animate-pulse rounded-sm bg-slate-500 align-middle dark:bg-slate-400" />
       )}
     </div>
   );
@@ -532,7 +532,7 @@ function Message({
     >
       {/* AI Avatar */}
       {!isUser && (
-        <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-[10px] font-bold text-white shadow-sm transition-transform duration-200 hover:scale-105 select-none">
+        <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-accent text-[10px] font-bold text-white shadow-sm transition-transform duration-200 hover:scale-105 select-none">
           AI
         </div>
       )}
@@ -546,8 +546,8 @@ function Message({
         <div
           className={`min-w-0 rounded-2xl px-4 py-3 text-[14px] leading-7 shadow-sm transition-colors ${
             isUser
-              ? "rounded-tr-none bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-blue-500/5"
-              : "rounded-tl-none border border-slate-200 bg-white text-slate-800 dark:border-slate-800/80 dark:bg-slate-900 dark:text-slate-100"
+              ? "rounded-tr-md bg-accent text-white shadow-accent-soft"
+              : "rounded-tl-md border border-slate-200 bg-white text-slate-800 dark:border-slate-800/80 dark:bg-slate-900 dark:text-slate-100"
           }`}
         >
           {isEditing ? (
@@ -572,7 +572,7 @@ function Message({
                     onCancelEdit?.();
                   }
                 }}
-                className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:bg-white dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:focus:bg-slate-950"
+                className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-accent focus:bg-white dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:focus:bg-slate-950"
               />
 
               <div className="flex justify-end gap-2">
@@ -590,7 +590,7 @@ function Message({
                 <button
                   type="button"
                   onClick={handleSave}
-                  className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-blue-700 cursor-pointer shadow-sm shadow-blue-500/10"
+                  className="rounded-lg bg-accent px-3 py-1 text-xs font-semibold text-white transition hover:bg-accent-dark cursor-pointer shadow-sm shadow-accent-soft"
                 >
                   Save
                 </button>
@@ -617,7 +617,7 @@ function Message({
         {typingDone && shouldShowSources && (
           <div className="mt-3 w-full max-w-full space-y-2 animate-fade-in select-none">
             <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 pl-1">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-accent">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                 <polyline points="14 2 14 8 20 8" />
               </svg>
@@ -657,8 +657,8 @@ function Message({
                   const displayLabel = getSourceLabel(source, filename, page);
 
                   const cardContent = (
-                    <div className="flex h-full items-start gap-2.5 rounded-xl border border-slate-250 bg-white p-3 shadow-sm hover:border-blue-500/35 hover:shadow dark:border-slate-800/80 dark:bg-slate-900 transition-all duration-200">
-                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-50/80 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400">
+                    <div className="flex h-full items-start gap-2.5 rounded-xl border border-slate-200 bg-white p-3 shadow-sm hover:border-accent hover:shadow dark:border-slate-800/80 dark:bg-slate-900 transition-all duration-200">
+                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent dark:bg-accent-soft-dark dark:text-accent-soft">
                         {isWebsiteSource(source, filename) ? (
                           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                             <circle cx="12" cy="12" r="10" />
@@ -682,7 +682,7 @@ function Message({
                             {isWebsiteSource(source, filename) ? "Website page" : "Document reference"}
                           </span>
                           {page && (
-                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold text-slate-655 dark:bg-slate-800 dark:text-slate-350">
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-400">
                               Page {page}
                             </span>
                           )}
@@ -729,11 +729,11 @@ function Message({
                   key={`${question}-${index}`}
                   type="button"
                   onClick={() => onSuggestedQuestion?.(question)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-left text-xs font-semibold text-slate-700 hover:text-blue-600 hover:border-blue-500/35 hover:shadow-sm transition-all duration-200 cursor-pointer dark:border-slate-800/80 dark:bg-slate-900 dark:text-slate-300 dark:hover:text-white flex items-center justify-between gap-3 group"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-left text-xs font-semibold text-slate-700 hover:text-accent hover:border-accent hover:shadow-sm transition-all duration-200 cursor-pointer dark:border-slate-800/80 dark:bg-slate-900 dark:text-slate-300 dark:hover:text-white flex items-center justify-between gap-3 group"
                   disabled={!onSuggestedQuestion}
                 >
                   <span className="truncate">{question}</span>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-slate-400 group-hover:text-blue-500 transition-colors shrink-0">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-slate-400 group-hover:text-accent transition-colors shrink-0">
                     <polyline points="9 18 15 12 9 6" />
                   </svg>
                 </button>
@@ -748,7 +748,7 @@ function Message({
             <button
               type="button"
               onClick={handleCopy}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-200/50 hover:text-slate-700 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-250 cursor-pointer"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-200/50 hover:text-slate-700 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-200 cursor-pointer"
               aria-label={copied ? "Copied message" : "Copy message"}
               title={copied ? "Copied" : "Copy"}
             >
@@ -766,7 +766,7 @@ function Message({
                   setDraft(msg.content);
                   onStartEdit?.();
                 }}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-200/50 hover:text-slate-700 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-250 cursor-pointer"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-200/50 hover:text-slate-700 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-200 cursor-pointer"
                 aria-label="Edit message"
                 title="Edit"
               >
@@ -779,7 +779,7 @@ function Message({
 
       {/* User Avatar */}
       {isUser && (
-        <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-slate-200 text-[10px] font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-350 shadow-sm select-none">
+        <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-slate-200 text-[10px] font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-400 shadow-sm select-none">
           You
         </div>
       )}

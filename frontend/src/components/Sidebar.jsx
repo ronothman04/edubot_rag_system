@@ -220,7 +220,7 @@ function Sidebar({
       <button
         type="button"
         onClick={onToggleCollapse}
-        className="hidden md:flex absolute top-5 -right-3 z-50 h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition-all hover:bg-slate-50 hover:text-slate-800 active:scale-95 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-850 dark:hover:text-slate-205 cursor-pointer"
+        className="hidden md:flex absolute top-5 -right-3 z-50 h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition-all hover:bg-slate-50 hover:text-slate-800 active:scale-95 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-300 cursor-pointer"
         aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
       >
         <svg
@@ -315,7 +315,7 @@ function Sidebar({
                     } ${
                       isActive
                         ? "bg-accent text-white shadow-accent-soft"
-                        : "hover:bg-gray-150 dark:hover:bg-slate-800 bg-transparent text-gray-700 dark:text-gray-300"
+                        : "hover:bg-gray-100 dark:hover:bg-slate-800 bg-transparent text-gray-700 dark:text-gray-300"
                     }`}
                   >
                     <span
@@ -451,7 +451,7 @@ function Sidebar({
           onClick={toggleTheme}
           data-tooltip={isCollapsed ? (isDarkMode ? "Light Mode" : "Dark Mode") : undefined}
           className={`bg-white dark:bg-slate-900 rounded-xl py-2.5 
-          flex items-center border border-gray-200 dark:border-slate-850
+          flex items-center border border-gray-200 dark:border-slate-800
           hover:border-accent hover:bg-gray-50/50 dark:hover:bg-slate-800/50
           transition-all duration-200 cursor-pointer group ${
             isCollapsed 
@@ -476,7 +476,7 @@ function Sidebar({
             onClick={() => navigateTo("settings")}
             data-tooltip={isCollapsed ? "Settings" : undefined}
             className={`bg-white dark:bg-slate-900 rounded-xl py-2.5 
-            flex items-center border border-gray-200 dark:border-slate-850
+            flex items-center border border-gray-200 dark:border-slate-800
             hover:border-accent hover:bg-gray-50/50 dark:hover:bg-slate-800/50
             transition-all duration-200 group cursor-pointer ${
               isCollapsed 
@@ -580,6 +580,8 @@ function GraduationIcon() {
       fill="none"
       stroke="white"
       strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
     >
       <path d="M22 10v6" />
       <path d="M2 10l10-5 10 5-10 5z" />

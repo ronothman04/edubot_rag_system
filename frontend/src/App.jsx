@@ -281,6 +281,10 @@ function App() {
         setUser(session?.user ?? null);
         setCurrentView("update-password");
       } else if (_event === 'SIGNED_IN') {
+        // Always start with a blank chat on login, not the last active conversation.
+        if (session?.user?.id) {
+          writeActiveChatSessionId(session.user.id, null);
+        }
         applySession(session).finally(() => {
           if (!ignore) {
             setSessionLoading(false);
@@ -290,6 +294,10 @@ function App() {
         setUser(null);
         setProfileRole(null);
         setCurrentView("login");
+        setMessages([]);
+        setHistory("");
+        setConversations([]);
+        setCurrentConversationId(null);
         setSessionLoading(false);
       }
     });
@@ -337,6 +345,9 @@ function App() {
     if (sessionLoading) return;
     if (!user) {
       const pathView = getViewFromPath();
+      if (AUTH_VIEWS.has(currentView)) {
+        return;
+      }
       if (!pathView || !AUTH_VIEWS.has(pathView)) {
         setCurrentView("login");
       }

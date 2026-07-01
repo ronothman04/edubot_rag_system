@@ -75,10 +75,10 @@ function UpdatePassword({ setCurrentView }) {
   };
 
   return (
-    <div className="flex min-h-screen flex-1 items-center justify-center bg-[#020817] px-4 text-slate-100">
+    <div className="flex min-h-dvh flex-1 items-center justify-center bg-white px-4 text-slate-900 transition-colors dark:bg-[#020817] dark:text-slate-100">
       <form
         onSubmit={handleUpdatePassword}
-        className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900/70 p-6 shadow-2xl"
+        className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-xl transition-colors dark:border-slate-800 dark:bg-slate-900/70 dark:shadow-2xl"
       >
         <div className="mb-6">
           <div className="bg-accent mb-4 flex h-12 w-12 items-center justify-center rounded-2xl">
@@ -96,16 +96,16 @@ function UpdatePassword({ setCurrentView }) {
             </svg>
           </div>
 
-          <h1 className="text-2xl font-bold text-white">Set Your Password</h1>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Set Your Password</h1>
 
-          <p className="mt-2 text-sm leading-6 text-slate-400">
+          <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
             Create a password to activate your admin account.
           </p>
         </div>
 
         <div className="space-y-4">
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-300">
+            <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">
               New Password
             </label>
 
@@ -114,12 +114,12 @@ function UpdatePassword({ setCurrentView }) {
               placeholder="Enter new password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="focus:border-accent w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500"
+              className="focus:border-accent w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition-colors placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:placeholder:text-slate-500"
             />
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-300">
+            <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">
               Confirm Password
             </label>
 
@@ -128,7 +128,7 @@ function UpdatePassword({ setCurrentView }) {
               placeholder="Confirm new password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
-              className="focus:border-accent w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500"
+              className="focus:border-accent w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition-colors placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:placeholder:text-slate-500"
             />
           </div>
 
@@ -144,7 +144,7 @@ function UpdatePassword({ setCurrentView }) {
         <button
           type="button"
           onClick={() => setCurrentView("login")}
-          className="mt-5 w-full text-sm text-slate-400 transition hover:text-white"
+          className="mt-5 w-full text-sm text-slate-500 transition hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
         >
           Back to login
         </button>

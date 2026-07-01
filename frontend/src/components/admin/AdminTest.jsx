@@ -406,22 +406,23 @@ function AdminTest() {
   return (
     <div className="flex h-full min-h-0 flex-1 overflow-hidden bg-slate-50 text-slate-900 dark:bg-[#020817] dark:text-slate-100">
       <div className="flex h-[105.3%] w-[105.3%] origin-top-left scale-[0.95] flex-col overflow-hidden">
-        <header className="flex flex-col gap-4 border-b border-slate-200 bg-white px-5 py-5 dark:border-slate-800 dark:bg-slate-950/70 lg:flex-row lg:items-center lg:justify-between">
+
+        {/* ── Header ── */}
+        <header className="flex flex-col gap-3 border-b border-slate-100 bg-white px-6 py-4 dark:border-slate-800/60 dark:bg-slate-950/80 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h1 className="text-3xl font-bold tracking-normal text-slate-950 dark:text-white">
+            <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
               AI Chat Test
             </h1>
-
-            <p className="mt-1 text-base font-medium text-slate-500 dark:text-slate-400">
+            <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
               Test how your RAG assistant answers using uploaded documents.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={exportResults}
-              className="inline-flex h-10 items-center gap-2 rounded-lg px-3 text-sm font-bold text-slate-600 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900"
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-slate-600 transition-colors duration-150 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-800/70 dark:hover:text-slate-100"
             >
               <Download className="h-4 w-4" />
               Export Results
@@ -430,7 +431,7 @@ function AdminTest() {
             <button
               type="button"
               onClick={clearChat}
-              className="inline-flex h-10 items-center gap-2 rounded-lg px-3 text-sm font-bold text-red-600 transition hover:bg-red-50 dark:hover:bg-red-500/10"
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-red-500 transition-colors duration-150 hover:bg-red-50 hover:text-red-600 dark:text-red-400 dark:hover:bg-red-500/10 dark:hover:text-red-300"
             >
               <Trash2 className="h-4 w-4" />
               Clear Chat
@@ -439,8 +440,10 @@ function AdminTest() {
         </header>
 
         <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_340px]">
-          <main className="flex min-h-0 flex-col overflow-hidden border-slate-200 dark:border-slate-800 lg:border-r">
-            <div className="flex-1 space-y-8 overflow-y-auto px-5 py-8 sm:px-8 lg:px-10">
+
+          {/* ── Chat column ── */}
+          <main className="flex min-h-0 flex-col overflow-hidden border-slate-100 dark:border-slate-800/60 lg:border-r">
+            <div className="flex-1 space-y-6 overflow-y-auto px-5 py-7 sm:px-8 lg:px-10">
               {messages.map((message) => (
                 <article
                   key={message.id}
@@ -449,12 +452,12 @@ function AdminTest() {
                   }`}
                 >
                   <div
-                    className={`max-w-3xl rounded-[22px] px-6 py-5 text-base leading-8 shadow-sm ${
+                    className={`max-w-3xl rounded-2xl px-5 py-4 text-base leading-7 ${
                       message.role === "user"
-                        ? "bg-blue-600 text-white"
+                        ? "bg-blue-600 text-white shadow-md shadow-blue-600/15"
                         : message.isError
-                          ? "border border-red-200 bg-red-50 text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-200"
-                          : "border border-slate-200 bg-white text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+                          ? "border border-red-100 bg-red-50 text-red-700 shadow-sm dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-200"
+                          : "border border-slate-100 bg-white text-slate-700 shadow-sm dark:border-slate-800/70 dark:bg-slate-900 dark:text-slate-200"
                     }`}
                   >
                     <MarkdownMessage
@@ -463,31 +466,19 @@ function AdminTest() {
                     />
 
                     {message.sources?.length ? (
-                      <div className="mt-5 border-t border-slate-200 pt-4 dark:border-slate-800">
-                        <div className="mb-3 flex flex-wrap items-center gap-5 text-xs font-black uppercase tracking-[0.12em] text-slate-400">
-                          <span>
-                            Sources Found:{" "}
-                            <span className="text-emerald-500">
-                              {message.sources.length}
-                            </span>
-                          </span>
-                        </div>
-
-                        <p className="mb-3 text-xs font-black uppercase tracking-[0.12em] text-slate-400">
-                          Sources:
+                      <div className="mt-4 border-t border-slate-100 pt-4 dark:border-slate-800">
+                        <p className="mb-2.5 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                          Sources · {message.sources.length} found
                         </p>
 
                         <div className="flex flex-wrap gap-2">
                           {message.sources.slice(0, 3).map((source, index) => (
                             <span
                               key={`${sourceLabel(source)}-${index}`}
-                              className="inline-flex max-w-full items-center gap-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-600 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-200"
+                              className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-blue-100 bg-blue-50 px-2.5 py-1.5 text-xs font-semibold text-blue-600 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300"
                             >
-                              <Link className="h-4 w-4 flex-none" />
-
-                              <span className="truncate">
-                                {sourceLabel(source)}
-                              </span>
+                              <Link className="h-3.5 w-3.5 flex-none" />
+                              <span className="truncate">{sourceLabel(source)}</span>
                             </span>
                           ))}
                         </div>
@@ -495,58 +486,66 @@ function AdminTest() {
                     ) : null}
                   </div>
 
-                  <div className="mt-2 flex items-center gap-2 px-3 text-xs font-semibold text-slate-400">
-                    {message.role === "user" ? "You" : "EduBot Assistant"}
-                    <span>-</span>
-                    {message.time}
+                  <div className="mt-1.5 flex items-center gap-1.5 px-2 text-[11px] font-medium text-slate-400">
+                    <span>{message.role === "user" ? "You" : "EduBot Assistant"}</span>
+                    <span className="opacity-50">·</span>
+                    <span>{message.time}</span>
                   </div>
                 </article>
               ))}
 
               {loading ? (
                 <div className="flex items-start">
-                  <div className="rounded-[22px] border border-slate-200 bg-white px-6 py-5 text-sm font-semibold text-slate-500 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
-                    EduBot Assistant is checking the uploaded documents...
+                  <div className="inline-flex items-center gap-2.5 rounded-2xl border border-slate-100 bg-white px-5 py-4 text-sm font-medium text-slate-500 shadow-sm dark:border-slate-800/70 dark:bg-slate-900 dark:text-slate-400">
+                    <span className="flex gap-1">
+                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:0ms]" />
+                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:150ms]" />
+                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:300ms]" />
+                    </span>
+                    Checking documents…
                   </div>
                 </div>
               ) : null}
             </div>
 
+            {/* ── Input bar ── */}
             <form
               onSubmit={handleTestQuery}
-              className="bg-gradient-to-t from-slate-50 via-slate-50 px-5 pb-8 pt-4 dark:from-[#020817] dark:via-[#020817] sm:px-8 lg:px-10"
+              className="bg-gradient-to-t from-slate-50 via-slate-50/90 px-5 pb-7 pt-3 dark:from-[#020817] dark:via-[#020817]/90 sm:px-8 lg:px-10"
             >
-              <div className="mx-auto flex max-w-4xl flex-col gap-4 rounded-[22px] border border-slate-200 bg-white p-4 shadow-lg shadow-slate-200/60 dark:border-slate-800 dark:bg-slate-900 dark:shadow-none sm:flex-row sm:items-end">
+              <div className="mx-auto flex max-w-4xl flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-3.5 shadow-md shadow-slate-200/50 dark:border-slate-800 dark:bg-slate-900 dark:shadow-none sm:flex-row sm:items-end">
                 <textarea
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Ask a question to test the RAG performance..."
-                  className="min-h-[72px] flex-1 resize-none border-0 bg-transparent px-2 py-3 text-base font-medium text-slate-800 outline-none placeholder:text-slate-400 dark:text-white dark:placeholder:text-slate-500"
+                  className="min-h-[64px] flex-1 resize-none border-0 bg-transparent px-2 py-2.5 text-sm font-medium text-slate-800 outline-none placeholder:text-slate-400 dark:text-white dark:placeholder:text-slate-500"
                 />
 
                 <button
                   type="submit"
                   disabled={loading || !query.trim()}
-                  className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-blue-600 px-7 text-base font-bold text-white shadow-lg shadow-blue-600/25 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 text-sm font-semibold text-white shadow-md shadow-blue-600/20 transition-all duration-150 hover:bg-blue-700 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {loading ? "Testing..." : "Ask AI"}
-                  <Send className="h-5 w-5" />
+                  {loading ? "Testing…" : "Ask AI"}
+                  <Send className="h-4 w-4" />
                 </button>
               </div>
             </form>
           </main>
 
-          <aside className="hidden overflow-y-auto bg-white px-7 py-8 dark:bg-slate-950/70 lg:block">
+          {/* ── Right panel ── */}
+          <aside className="hidden overflow-y-auto border-l border-slate-100 bg-white px-6 py-7 dark:border-slate-800/60 dark:bg-slate-950/70 lg:block">
+
+            {/* System Prompt */}
             <section>
-              <div className="mb-5 flex items-center justify-between">
-                <h2 className="text-sm font-black uppercase tracking-[0.18em] text-slate-400">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-[11px] font-bold uppercase tracking-widest text-slate-400">
                   System Prompt
                 </h2>
-
                 <button
                   type="button"
                   onClick={() => setIsEditingPrompt((prev) => !prev)}
-                  className="text-sm font-bold text-blue-600 transition hover:text-blue-500"
+                  className="text-xs font-semibold text-blue-600 transition-colors duration-150 hover:text-blue-500 dark:text-blue-400 dark:hover:text-blue-300"
                 >
                   {isEditingPrompt ? "Save" : "Edit"}
                 </button>
@@ -556,27 +555,27 @@ function AdminTest() {
                 <textarea
                   value={systemPrompt}
                   onChange={(e) => setSystemPrompt(e.target.value)}
-                  className="min-h-[180px] w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm font-medium leading-7 text-slate-700 outline-none transition focus:border-blue-400 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+                  className="min-h-[160px] w-full resize-none rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700 outline-none transition-colors duration-150 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:focus:ring-blue-500/10"
                 />
               ) : (
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm font-medium italic leading-7 text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
+                <div className="rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm italic leading-6 text-slate-600 dark:border-slate-800 dark:bg-slate-900/60 dark:text-slate-300">
                   "{systemPrompt}"
                 </div>
               )}
             </section>
 
-            <section className="mt-10">
-              <div className="mb-6 flex items-center justify-between">
-                <h2 className="text-sm font-black uppercase tracking-[0.18em] text-slate-400">
+            {/* Active Context */}
+            <section className="mt-8">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-[11px] font-bold uppercase tracking-widest text-slate-400">
                   Active Context
                 </h2>
-
-                <span className="rounded-md bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-700">
+                <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400">
                   {documents.length} Documents
                 </span>
               </div>
 
-              <div className="space-y-5">
+              <div className="space-y-2">
                 {documents.slice(0, 4).map((doc, index) => {
                   const filename = getDocumentName(doc);
                   const chunks = getDocumentChunks(doc);
@@ -585,23 +584,20 @@ function AdminTest() {
                   return (
                     <div
                       key={`${filename}-${index}`}
-                      className="flex items-center gap-4"
+                      className="flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-3 transition-all duration-150 hover:border-slate-200 hover:shadow-sm dark:border-slate-800/60 dark:bg-slate-900/50 dark:hover:border-slate-700"
                     >
                       <span
-                        className={`flex h-10 w-10 flex-none items-center justify-center rounded-lg ${type.tone}`}
+                        className={`flex h-9 w-9 flex-none items-center justify-center rounded-lg ${type.tone}`}
                       >
-                        <FileText className="h-5 w-5" />
+                        <FileText className="h-4 w-4" />
                       </span>
 
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-black text-slate-700 dark:text-slate-100">
+                        <p className="truncate text-sm font-semibold text-slate-700 dark:text-slate-100">
                           {filename}
                         </p>
-
-                        <p className="text-xs font-semibold text-slate-400">
-                          {chunks
-                            ? `${chunks} chunks indexed`
-                            : "Active knowledge source"}
+                        <p className="text-[11px] font-medium text-slate-400">
+                          {chunks ? `${chunks} chunks indexed` : "Active knowledge source"}
                         </p>
                       </div>
                     </div>
@@ -609,9 +605,9 @@ function AdminTest() {
                 })}
 
                 {documents.length === 0 ? (
-                  <p className="rounded-xl border border-dashed border-slate-300 px-4 py-5 text-sm font-semibold text-slate-400 dark:border-slate-700">
+                  <p className="rounded-xl border border-dashed border-slate-200 px-4 py-5 text-sm font-medium text-slate-400 dark:border-slate-700 dark:text-slate-500">
                     {documentsLoading
-                      ? "Loading active documents..."
+                      ? "Loading active documents…"
                       : "No documents are active yet."}
                   </p>
                 ) : null}
@@ -621,27 +617,26 @@ function AdminTest() {
                 type="button"
                 onClick={fetchDocuments}
                 disabled={documentsLoading}
-                className="mt-6 flex h-11 w-full items-center justify-center rounded-xl border border-dashed border-slate-300 text-sm font-bold text-slate-400 transition hover:border-blue-300 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700"
+                className="mt-4 flex h-10 w-full items-center justify-center rounded-xl border border-dashed border-slate-200 text-sm font-semibold text-slate-400 transition-all duration-150 hover:border-blue-300 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:hover:border-blue-500/50 dark:hover:text-blue-400"
               >
-                {documentsLoading ? "Refreshing..." : "+ Refresh Documents"}
+                {documentsLoading ? "Refreshing…" : "+ Refresh Documents"}
               </button>
             </section>
 
-            <section className="mt-10">
-              <div className="mb-6 flex items-center gap-2">
-                <SlidersHorizontal className="h-4 w-4 text-slate-400" />
-
-                <h2 className="text-sm font-black uppercase tracking-[0.18em] text-slate-400">
+            {/* Hyperparameters */}
+            <section className="mt-8">
+              <div className="mb-4 flex items-center gap-2">
+                <SlidersHorizontal className="h-3.5 w-3.5 text-slate-400" />
+                <h2 className="text-[11px] font-bold uppercase tracking-widest text-slate-400">
                   Hyperparameters
                 </h2>
               </div>
 
-              <div className="space-y-7">
+              <div className="space-y-6">
                 <div>
-                  <div className="mb-3 flex justify-between text-sm font-bold text-slate-700 dark:text-slate-200">
+                  <div className="mb-2 flex justify-between text-sm font-semibold text-slate-700 dark:text-slate-200">
                     <span>Temperature</span>
-
-                    <span className="text-blue-600">
+                    <span className="font-bold text-blue-600 dark:text-blue-400">
                       {temperature.toFixed(1)}
                     </span>
                   </div>
@@ -656,17 +651,15 @@ function AdminTest() {
                     className="w-full accent-blue-600"
                   />
 
-                  <p className="mt-2 text-xs font-medium leading-5 text-slate-400">
-                    Lower values are more strict and factual. For RAG, 0.2 to
-                    0.3 is recommended.
+                  <p className="mt-1.5 text-xs leading-5 text-slate-400">
+                    Lower values are more strict and factual. For RAG, 0.2 to 0.3 is recommended.
                   </p>
                 </div>
 
                 <div>
-                  <div className="mb-3 flex justify-between text-sm font-bold text-slate-700 dark:text-slate-200">
+                  <div className="mb-2 flex justify-between text-sm font-semibold text-slate-700 dark:text-slate-200">
                     <span>Top-K Retrieval</span>
-
-                    <span className="text-blue-600">{topK}</span>
+                    <span className="font-bold text-blue-600 dark:text-blue-400">{topK}</span>
                   </div>
 
                   <input
@@ -679,22 +672,22 @@ function AdminTest() {
                     className="w-full accent-blue-600"
                   />
 
-                  <p className="mt-2 text-xs font-medium leading-5 text-slate-400">
-                    Controls how many document chunks are retrieved before
-                    answering.
+                  <p className="mt-1.5 text-xs leading-5 text-slate-400">
+                    Controls how many document chunks are retrieved before answering.
                   </p>
                 </div>
               </div>
             </section>
 
+            {/* Latest Test snippet */}
             {latestAnswer ? (
-              <section className="mt-10 rounded-2xl border border-blue-100 bg-blue-50 p-5 dark:border-blue-500/20 dark:bg-blue-500/10">
-                <div className="mb-3 flex items-center gap-2 text-sm font-black text-blue-700 dark:text-blue-200">
-                  <Bot className="h-4 w-4" />
+              <section className="mt-8 rounded-xl border border-blue-100 bg-blue-50/60 p-4 dark:border-blue-500/20 dark:bg-blue-500/5">
+                <div className="mb-2 flex items-center gap-1.5 text-xs font-bold text-blue-700 dark:text-blue-300">
+                  <Bot className="h-3.5 w-3.5" />
                   Latest Test
                 </div>
 
-                <p className="line-clamp-4 text-sm font-medium leading-6 text-blue-900 dark:text-blue-100">
+                <p className="line-clamp-4 text-sm leading-6 text-blue-900 dark:text-blue-100">
                   {latestAnswer.content}
                 </p>
               </section>
