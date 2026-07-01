@@ -363,6 +363,34 @@ def fee_relevance_score(document: str) -> float:
     return score
 
 
+def current_role_evidence_score(query: str, document: str) -> float:
+    """Prefer explicit latest-tenure evidence for current role-holder queries."""
+    q = normalize_text(query)
+    if not any(marker in q for marker in ("current", "present", "now")):
+        return 0.0
+
+    d = normalize_text(document)
+    role_case = extract_role_query(query)
+    role = normalize_text(str(role_case.get("role") or ""))
+    if not role and "principal" in q:
+        role = "principal"
+    if not role or role not in d:
+        return 0.0
+
+    score = 0.0
+    if re.search(
+        rf"\b(?:current|present) {re.escape(role)}\b|"
+        rf"\b{re.escape(role)}\b\s*(?:\(|from )\s*\d{{4}}\s*(?:-|to)\s*present",
+        d,
+    ):
+        score += 4000.0
+    if re.search(rf"\btook over as (?:the )?\d+(?:st|nd|rd|th) {re.escape(role)}\b", d):
+        score += 4000.0
+    if re.search(rf"\bappointed as (?:the )?{re.escape(role)}\b|\bassumed (?:office|charge) as (?:the )?{re.escape(role)}\b", d):
+        score += 3500.0
+    return score
+
+
 def role_evidence_score(query: str, document: str) -> float:
     """Assess if the document holds details of requested role holders."""
     q = normalize_text(query)
@@ -405,6 +433,7 @@ def role_evidence_score(query: str, document: str) -> float:
         score -= 700.0
     if "principal" in q and "principal chairman" in d:
         score += 250.0
+    score += current_role_evidence_score(query, document)
     return score
 
 

@@ -728,7 +728,14 @@ def is_followup_query(query: str) -> bool:
     ]
     if any(word in q for word in topic_words):
         return False
-    return any(pattern in q for pattern in FORMAT_FOLLOWUP_PATTERNS + DETAIL_FOLLOWUP_PATTERNS + REFERENCE_FOLLOWUP_PATTERNS)
+    if any(pattern in q for pattern in FORMAT_FOLLOWUP_PATTERNS + DETAIL_FOLLOWUP_PATTERNS):
+        return True
+    # Reference markers must be whole words/phrases. A raw substring check made
+    # standalone topics such as "facilities" match the marker "it".
+    return any(
+        re.search(rf"\b{re.escape(pattern)}\b", q)
+        for pattern in REFERENCE_FOLLOWUP_PATTERNS
+    )
 
 
 def get_last_real_user_question(history: str) -> str | None:
@@ -745,9 +752,211 @@ def get_last_real_user_question(history: str) -> str | None:
     return user_questions[-1] if user_questions else None
 
 
+# ── Contextual follow-up rewriting ───────────────────────────────────────────
+# Short replies that accept/continue based on what the assistant just offered.
+
+_AFFIRMATIVE_EXACT: frozenset[str] = frozenset({
+    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "alright",
+    "please", "go ahead", "go on", "continue", "proceed",
+    "both", "both please", "all", "all of them", "of course",
+    "please do", "yes please", "yes sure", "yes continue",
+    "yes both", "tell me both", "give me both",
+    "i would", "i would like that", "i'd like that",
+})
+
+_AFFIRMATIVE_CONTAINS: tuple[str, ...] = (
+    "yes please", "yes i ", "yes, i ",
+    "please tell me", "please provide", "please go",
+    "give me the details", "give me more details", "give me more",
+    "i want to know more", "i would like to know", "i'd like to know",
+)
+
+
+def get_last_assistant_response(history: str) -> str | None:
+    """Return the last assistant turn from conversation history."""
+    if not history or not history.strip():
+        return None
+    last_assistant: str | None = None
+    for line in history.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("assistant:"):
+            content = stripped[len("assistant:"):].strip()
+            if content:
+                last_assistant = content
+    return last_assistant
+
+
+def is_contextual_affirmative(query: str) -> bool:
+    """True when the reply is a short acceptance signal with no embedded topic."""
+    q = normalize_query_text(query).strip()
+    if not q:
+        return False
+    if q in _AFFIRMATIVE_EXACT:
+        return True
+    return any(phrase in q for phrase in _AFFIRMATIVE_CONTAINS)
+
+
+def _extract_offered_topics(assistant_text: str) -> list[str]:
+    """
+    Heuristically extract the topics the assistant offered to discuss.
+    Handles patterns such as:
+      "Would you like [A] or [B]?"
+      "Would you like assistance with [A] or details about [B]?"
+      "feel free to ask about [X] or [Y]"
+      "I can also tell you about [X]"
+      "Do you want to know more about [X]?"
+    Returns a list of topic strings (may be empty).
+    """
+    # Exclude the generic "You may ask:" suggestions injected by the bot.
+    text = assistant_text
+    lower = text.lower()
+    if "you may ask:" in lower:
+        text = text[: lower.index("you may ask:")]
+
+    _FILLER = re.compile(
+        r"^(assistance with|details about|information about|more about"
+        r"|me to explain|to know about|about)\s+",
+        re.IGNORECASE,
+    )
+
+    def _split_offer(raw: str) -> list[str]:
+        """Split 'A or [filler] B' into ['A', 'B']."""
+        parts = re.split(
+            r"\s+or\s+(?:details about|information about|more about"
+            r"|assistance with|about)?\s*",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        return [_FILLER.sub("", p).strip().rstrip("?.,;") for p in parts if p.strip()]
+
+    # Pattern 1: "Would you like …?"
+    m = re.search(r"would you like\b(.+?)(?:\?|$)", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        topics = _split_offer(m.group(1).strip())
+        if topics:
+            return topics
+
+    # Pattern 2: "feel free to ask (me) (about) …"
+    m = re.search(
+        r"feel free to ask\b(?:(?: me)? about)?\s+(.+?)(?:\.|,|\?|$)",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        raw = m.group(1).strip().rstrip(".,?")
+        topics = [p.strip() for p in re.split(r"\s+(?:or|and)\s+", raw, flags=re.IGNORECASE) if p.strip()]
+        if topics:
+            return topics
+
+    # Pattern 3: "I can (also) tell/provide/give you (more information) about …"
+    m = re.search(
+        r"(?:i can(?: also)? (?:tell|provide|give) you(?:(?: more)? information)? about"
+        r"|you can also ask about)\s+(.+?)(?:\.|,|\?|$)",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        raw = m.group(1).strip().rstrip(".,?")
+        topics = [p.strip() for p in re.split(r"\s+(?:or|and)\s+", raw, flags=re.IGNORECASE) if p.strip()]
+        if topics:
+            return topics
+
+    # Pattern 4: "Do you want to know (more) about …?"
+    m = re.search(
+        r"do you want(?: to know)?(?: more)? about\s+(.+?)(?:\?|$|\.)",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        raw = m.group(1).strip().rstrip(".,?")
+        if raw:
+            return [raw]
+
+    # Pattern 5: "(further/more/additional) information about X (or Y)"
+    # Catches "If you need further information about Mr. Bhardwaj or his role…"
+    # Terminates at comma or "?" only — NOT at period — because re.IGNORECASE
+    # makes [a-z] match uppercase, causing "Mr. B" to falsely end the capture.
+    # In practice the topic clause is always comma-separated from "feel free to ask".
+    m = re.search(
+        r"(?:further|more|additional)?\s*information about\s+(.+?)(?:,|\?|$)",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        raw = m.group(1).strip().rstrip(".,?")
+        topics = [p.strip() for p in re.split(r"\s+(?:or|and)\s+", raw, flags=re.IGNORECASE) if p.strip()]
+        if topics:
+            return topics
+
+    return []
+
+
+def rewrite_contextual_followup(query: str, history: str) -> tuple[str, bool]:
+    """
+    Convert a contextual follow-up reply into a standalone retrieval query.
+
+    Triggered when the user says something like "yes", "okay", "tell me more",
+    "give me the details" after the assistant offered specific topics.
+
+    Returns (rewritten_query, was_rewritten).  The rewritten query is used for
+    retrieval and answer generation; the original query is preserved in history.
+    """
+    q = normalize_query_text(query).strip()
+    if not q:
+        return query, False
+
+    is_affirmative = is_contextual_affirmative(q)
+    # Detail phrases are only treated as contextual when they are short (≤ 5 words)
+    # and contain no embedded topic; longer detail phrases are self-sufficient.
+    is_short_detail = (
+        len(q.split()) <= 5
+        and any(p in q for p in DETAIL_FOLLOWUP_PATTERNS)
+    )
+
+    if not (is_affirmative or is_short_detail):
+        return query, False
+
+    last_assistant = get_last_assistant_response(history)
+    last_user_q = get_last_real_user_question(history)
+
+    if not last_assistant and not last_user_q:
+        return query, False
+
+    # Try to extract what the assistant specifically offered.
+    topics: list[str] = _extract_offered_topics(last_assistant) if last_assistant else []
+
+    if topics:
+        topic_str = " and ".join(topics)
+        rewritten = f"Provide information about {topic_str}"
+        if last_user_q:
+            ctx = re.sub(
+                r"^(who is|what is|tell me about|what are|how do i|can you tell me)\s+",
+                "",
+                last_user_q,
+                flags=re.IGNORECASE,
+            ).strip()
+            if ctx:
+                rewritten += f" in the context of {ctx}"
+        return rewritten, True
+
+    # No explicit offer found — ask for more on the previous topic.
+    if last_user_q:
+        return f"Provide more detailed information about {last_user_q}", True
+
+    return query, False
+
+
 def build_smart_query(query: str, history: str) -> tuple[str, str, bool]:
     """Combine followup modifiers with previous question."""
     query = (query or "").strip()
+
+    # Contextual follow-up rewriting runs first so affirmative replies ("yes",
+    # "okay", "tell me more") resolve to what the assistant offered rather than
+    # just repeating the previous user question unchanged.
+    rewritten, was_rewritten = rewrite_contextual_followup(query, history)
+    if was_rewritten:
+        return rewritten, query, True
+
     if is_followup_query(query):
         previous_question = get_last_real_user_question(history)
         if previous_question:

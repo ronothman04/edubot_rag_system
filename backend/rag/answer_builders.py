@@ -190,6 +190,28 @@ def invalid_person_lookup_answer(query: str, answer: str) -> bool:
     return not has_capitalized_name
 
 
+def build_current_principal_answer(query: str, context: str) -> str | None:
+    """Return a stable, citation-free answer when current principal evidence is explicit."""
+    q = normalize_text(query)
+    if "principal" not in q or not any(term in q for term in ("current", "present", "now")):
+        return None
+
+    title = r"(?:Rev\.\s*)?(?:Dr\.\s*)?(?:Fr\.?|Br\.?|Sr\.?)"
+    name_word = r"[A-Z][A-Za-z.'-]+"
+    pattern = re.compile(
+        rf"\b({title}\s+{name_word}(?:\s+{name_word}){{1,3}}"
+        rf"(?:\s+SDB)?(?:,\s*PhD)?)\s+Principal\b",
+        flags=re.IGNORECASE,
+    )
+    matches = [_clean_candidate_name(match.group(1)) for match in pattern.finditer(context or "")]
+    if not matches:
+        return None
+
+    # Prefer the fullest supported form when the same person appears abbreviated.
+    name = max(matches, key=lambda value: (len(value.split()), len(value)))
+    return f"The present principal of St. Anthony's College is {name}."
+
+
 def _dedupe_text_items(items: list[str]) -> list[str]:
     seen = set()
     res = []

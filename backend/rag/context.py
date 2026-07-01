@@ -60,6 +60,7 @@ from .scoring import (
     role_evidence_score,
     staff_relevance_score,
 )
+from .table_integrity import sanitize_context_tables
 from .text_utils import (
     clean_text,
     important_words,
@@ -218,6 +219,12 @@ def build_context(
             continue
 
         cleaned = focus_text_for_query(query, doc, chunk_char_limit)
+        # Degrade structurally-broken extracted tables (placeholder headers, blank
+        # cells, detached header rows) into plain "label | value" lines before the
+        # LLM ever sees them, so the model cannot re-render a polished-but-fabricated
+        # table from broken structure. Reliable tables are left untouched. General;
+        # see rag/table_integrity.py. Runs at query time — no re-ingestion needed.
+        cleaned, _tables_degraded = sanitize_context_tables(cleaned)
         if len(cleaned.split()) < MIN_CHUNK_WORDS:
             continue
 

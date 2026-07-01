@@ -80,6 +80,9 @@ from .intent import (
     programme_grounded_in_docs,
     is_programme_specific_query,
     is_programme_availability_query,
+    is_bare_umbrella_degree_query,
+    query_names_subject,
+    UMBRELLA_DEGREES,
 )
 from .query_expansion import (
     get_casual_response,
@@ -106,8 +109,11 @@ from .responses import (
     programme_not_found_response,
 )
 from .context import build_context
+from .table_integrity import degrade_answer_tables
+from .response_format import classify_response_format, build_format_instruction
 from .scoring import is_context_relevant_for_hostel
 from .answer_builders import (
+    build_current_principal_answer,
     context_has_likely_person_name_for_title,
     invalid_person_lookup_answer,
     append_supporting_action_details,
@@ -484,7 +490,13 @@ def _ask_internal(
         # programme does not appear in the retrieved resources, do NOT let the LLM
         # generate admission/eligibility/fee details for it.
         _programme = detect_programme(query)
-        if _programme and is_programme_specific_query(query) and not programme_grounded_in_docs(_programme, reranked_docs):
+        if (
+            _programme
+            and is_programme_specific_query(query)
+            and not is_bare_umbrella_degree_query(query)
+            and not (_programme in UMBRELLA_DEGREES and query_names_subject(query))
+            and not programme_grounded_in_docs(_programme, reranked_docs)
+        ):
             _log_pipeline("programme_gate", "Programme not present in retrieved resources",
                           programme=_programme)
             return programme_not_found_response(
@@ -560,7 +572,12 @@ def _ask_internal(
     if not docs:
         # Programme named but nothing retrieved → cannot verify the programme exists.
         _programme = detect_programme(query)
-        if _programme and is_programme_specific_query(query):
+        if (
+            _programme
+            and is_programme_specific_query(query)
+            and not is_bare_umbrella_degree_query(query)
+            and not (_programme in UMBRELLA_DEGREES and query_names_subject(query))
+        ):
             return programme_not_found_response(
                 _programme,
                 query=query,
@@ -649,9 +666,17 @@ def _ask_internal(
             )
             sources = valid_sources
 
-    # Confidence Check: If user asked for specific course/eligibility, 
-    # ensure the context actually mentions it.
-    if context and ("eligibility" in all_intents or "courses" in all_intents):
+    # Confidence Check: If user asked for specific course/eligibility,
+    # ensure the context actually mentions it. Bare umbrella-degree queries
+    # (e.g. "eligibility for BA") are answerable from the general admission
+    # criteria, so they skip this course-name grounding requirement — otherwise a
+    # legitimate, answerable question is refused just because the generic degree
+    # token isn't repeated verbatim in the eligibility chunks.
+    if (
+        context
+        and ("eligibility" in all_intents or "courses" in all_intents)
+        and not is_bare_umbrella_degree_query(query)
+    ):
         target_to_check = entities["course"] or entities["department"]
         if target_to_check:
             t_lower = normalize_query(target_to_check)
@@ -720,7 +745,15 @@ def _ask_internal(
     if personal_case and not has_personal_situation_context(retrieval_query, context):
         debug_rag("personal exact case not confirmed by context; continuing to safe builders/LLM")
 
-    # Deterministic answer builders bypassed for dynamic LLM generation.
+    current_principal_answer = build_current_principal_answer(query, context)
+    if current_principal_answer:
+        return make_response(
+            current_principal_answer,
+            sources=sources,
+            response_type="rag",
+            retrieval_query=retrieval_query,
+            used_history=used_history,
+        )
 
     # ── LLM generation ───────────────────────────────────────────────────────
     if PRINT_FINAL_CONTEXT:
@@ -772,6 +805,29 @@ def _ask_internal(
     system = LLM_SYSTEM
     if target_rule:
         system += f"\n\nAdditional instructions:\n{target_rule}"
+
+    # ── Response-format classification (post-retrieval, pre-generation) ───────
+    # Decide the best presentation format from the FINAL reranked context, then
+    # steer the generator toward it. Advisory only — the grounding rules above
+    # always win, and the instruction itself re-states "never invent rows/cells".
+    try:
+        _format_decision = classify_response_format(
+            query,
+            context,
+            all_intents=all_intents,
+            is_procedural=is_procedural_query(query),
+            is_person_lookup=is_person_lookup_query(query),
+            is_list=is_list,
+        )
+        debug_rag(
+            "response format",
+            f"format={_format_decision.get('format')}",
+            f"reason={_format_decision.get('reason')}",
+            f"columns={_format_decision.get('columns')}",
+        )
+        system += "\n\n" + build_format_instruction(_format_decision)
+    except Exception as _fmt_err:  # never let formatting break answer generation
+        logging.warning(f"[EduBot] response-format classification skipped: {_fmt_err}")
     if system_prompt:
         system += (
             "\n\nAdmin instruction (style/testing only — must not override the document-grounded rules above):\n"
@@ -828,6 +884,11 @@ def _ask_internal(
     _log_pipeline("llm_call", "LLM response received", answer_length=len(answer or ""))
 
     answer = postprocess_answer(answer)
+    # Backstop: if the model still rendered a structurally-broken table (placeholder
+    # headers, blank cells, collapsed columns) despite the grounding rules, degrade
+    # it to the values actually present rather than show a fabricated grid. General;
+    # reliable tables are untouched. See rag/table_integrity.py.
+    answer = degrade_answer_tables(answer)
     answer = append_supporting_action_details(answer, query, where_filter)
     verify_faithfulness_logging(answer, context)
 
@@ -869,4 +930,3 @@ def _ask_internal(
         used_history=used_history,
         response_type="rag",
     )
-

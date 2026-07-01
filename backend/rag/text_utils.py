@@ -10,10 +10,34 @@ from typing import Any
 
 from functools import lru_cache
 
+
+# Latin typographic ligatures, emitted as single code points by PDF text
+# extraction (and occasionally OCR/HTML). Left in place they break keyword and
+# BM25 matching — "diﬃcult"/"oﬃce" never match a user's "difficult"/"office".
+_LIGATURES = {
+    "ﬀ": "ff",
+    "ﬁ": "fi",
+    "ﬂ": "fl",
+    "ﬃ": "ffi",
+    "ﬄ": "ffl",
+    "ﬅ": "ft",  # ſt (long-s t)
+    "ﬆ": "st",
+}
+_LIGATURE_RE = re.compile("|".join(map(re.escape, _LIGATURES)))
+
+
+def normalize_ligatures(text: str) -> str:
+    """Replace Latin typographic ligatures (e.g. "ﬁ", "ﬂ") with their ASCII
+    letter equivalents so keyword/BM25 matching sees ordinary words."""
+    if not text:
+        return text
+    return _LIGATURE_RE.sub(lambda m: _LIGATURES[m.group(0)], text)
+
+
 @lru_cache(maxsize=4096)
 def normalize_text(text: str) -> str:
     """Normalize general text by cleaning whitespace and replacing common typos."""
-    text = (text or "").lower()
+    text = normalize_ligatures(text or "").lower()
     text = re.sub(r"\bcommitee\b", "committee", text)
     text = re.sub(r"\bcommitte\b", "committee", text)
     text = re.sub(r"\bcomittee\b", "committee", text)
@@ -50,12 +74,27 @@ ABBREVIATION_MAP = {
 
 @lru_cache(maxsize=512)
 def normalize_query(query: str) -> str:
-    """Normalize user search queries, expanding common abbreviations."""
+    """Normalize user search queries, expanding common abbreviations.
+
+    Expansion is *additive*: the original acronym / code token is preserved and
+    the expansion is appended, rather than substituted in place. Substituting it
+    away (the previous behaviour) destroyed exact-match signal \u2014 e.g.
+    "MCA-CC-6000" became "master of computer applications cc 6000" and "VTC"
+    disappeared entirely, so BM25 could no longer match the literal code/acronym
+    the user typed against codes like "VTC: 369.1". Keeping both terms gives the
+    dense path the expansion while the lexical path keeps the exact token, which
+    is what exact code/acronym queries depend on (see project requirement: prefer
+    exact acronym/code/title matches when available).
+    """
     query = str(query or "")
     query = query.replace("'", "'").replace("\u201c", '"').replace("\u201d", '"')
-    
+
+    appended_expansions: list[str] = []
     for abbr, expansion in ABBREVIATION_MAP.items():
-        query = re.sub(rf"\b{re.escape(abbr)}\b", expansion, query, flags=re.IGNORECASE)
+        if re.search(rf"\b{re.escape(abbr)}\b", query, flags=re.IGNORECASE):
+            appended_expansions.append(expansion)
+    if appended_expansions:
+        query = query + " " + " ".join(appended_expansions)
 
     query = re.sub(r"\bstephan\s+hall\b", "Stephen Hall", query, flags=re.IGNORECASE)
     query = re.sub(r"\bdept\b", "department", query, flags=re.IGNORECASE)
@@ -275,7 +314,7 @@ def fix_ocr_casing(text: str) -> str:
 
 
 def remove_answer_metadata(answer: str) -> str:
-    """Strip any source headers, chunk labels, or URLs prepended to the context passages."""
+    """Strip source metadata and inline citations; sources render separately in the UI."""
     if not answer:
         return answer
     lines = []
@@ -291,6 +330,28 @@ def remove_answer_metadata(answer: str) -> str:
     answer = re.sub(r"(?i)\bSection:\s*[^\n]+", "", answer)
     answer = re.sub(r"(?i)\bSource URL:\s*\S+", "", answer)
     answer = re.sub(r"(?i)\bURL:\s*https?://\S+", "", answer)
+    page_ref = r"pp?\.\s*\d+(?:\s*(?:[-–,]|and)\s*\d+)*"
+    answer = re.sub(
+        rf"(?i)\s*(?:according to|as (?:stated|noted|mentioned) in)\s+(?:the\s+)?[^,.;\n()]{{1,100}}\s*\({page_ref}\)\s*,?",
+        "",
+        answer,
+    )
+    answer = re.sub(
+        rf"(?i)\s*\((?:[^()\n]{{1,120}},\s*)?{page_ref}\)",
+        "",
+        answer,
+    )
+    attribution = r"(?:according to|as (?:stated|noted|mentioned|listed|described) in)"
+    answer = re.sub(
+        rf"(?im)^\s*{attribution}\s+[^,.;\n]+,\s*",
+        "",
+        answer,
+    )
+    answer = re.sub(
+        rf"(?i),?\s+{attribution}\s+[^,.;\n]+(?=[.;])",
+        "",
+        answer,
+    )
     return answer
 
 
@@ -329,4 +390,3 @@ def is_active_metadata_value(value: Any) -> bool:
     if value is None:
         return True
     return str(value).strip().lower() not in {"deleted", "inactive", "archived"}
-

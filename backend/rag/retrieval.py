@@ -8,6 +8,7 @@ and external db.py, embeddings.py, and reranker.py.
 """
 
 import logging
+import re
 from typing import Any
 
 from db import collection
@@ -77,6 +78,7 @@ from .scoring import (
     metadata_boost_score,
     staff_relevance_score,
     role_evidence_score,
+    current_role_evidence_score,
     has_head_marker_near_topic,
     attendance_relevance_score,
     fee_evidence_score,
@@ -100,7 +102,7 @@ from .scoring import (
 from .query_expansion import expand_query
 from .answer_builders import context_has_likely_person_name_for_title
 from .context import build_context
-from .freshness import freshness_rank_items
+from .freshness import freshness_rank_items, drop_superseded_duplicates
 
 
 def debug_rag(message: str, *values: Any) -> None:
@@ -572,6 +574,38 @@ def _is_generic_topic(topic: str | None) -> bool:
     return all(w in _GENERIC_TOPIC_TERMS for w in words)
 
 
+def _is_college_history_query(query: str) -> bool:
+    """Distinguish institutional history from History-department content."""
+    q = normalize_text(query)
+    if "college" not in q:
+        return False
+    return any(marker in q for marker in (
+        "history of the college",
+        "college history",
+        "short history",
+        "brief history",
+        "origin of the college",
+        "college founded",
+        "college established",
+    ))
+
+
+def _has_college_history_evidence(doc: str, meta: dict | None) -> bool:
+    """Reject literal 'history' matches that contain no college-history evidence."""
+    meta = meta or {}
+    source_url = str(meta.get("source_url") or "").lower()
+    filename = normalize_text(str(meta.get("filename") or ""))
+    haystack = normalize_text(
+        f"{doc} {meta.get('title', '')} {meta.get('section_title', '')} {source_url}"
+    )
+    return (
+        "/college/history" in source_url
+        or "st anthony" in haystack
+        or "st anthony s college" in haystack
+        or ("about" in filename and "college" in haystack)
+    )
+
+
 # TODO: split
 def rerank_results(
     query: str,
@@ -841,6 +875,138 @@ def apply_knowledge_hierarchy(
     return out_docs[:top_k], out_metas[:top_k], out_dists[:top_k]
 
 
+# Programme codes that may have a DEDICATED faculty roster document — a file
+# whose body literally reads "...Faculty Members teaching <CODE>..." (e.g.
+# FP.pdf, "Profile of Faculty Members teaching MCA"). The marker must actually
+# exist in the index for the override below to fire, so this list only widens
+# which codes are CONSIDERED; it can never invent a roster.
+_PROGRAMME_FACULTY_CODES = ("mca", "pgdca", "bca", "mba", "bba", "msw")
+
+
+def _named_programme_for_faculty_query(query: str) -> str | None:
+    """
+    Return the programme code when the query is a faculty/staff question that
+    names a specific programme — e.g. "who are the faculty of MCA" -> "mca".
+
+    This is deliberately narrow: it only matches a whole-word programme CODE, so
+    a department question ("faculty of computer science") does not trigger the
+    programme-specific roster override.
+    """
+    if not is_staff_query(query):
+        return None
+    q = normalize_text(query)
+    for code in _PROGRAMME_FACULTY_CODES:
+        if re.search(rf"\b{re.escape(code)}\b", q):
+            return code
+    return None
+
+
+def _is_program_faculty_roster(doc: str, programme: str) -> bool:
+    """True for the dedicated 'Faculty Members teaching <programme>' roster."""
+    body = normalize_text(content_without_context_header(doc))
+    return f"faculty members teaching {programme}" in body
+
+
+def _keep_with_program_roster(doc: str, meta: dict | None, programme: str) -> bool:
+    """
+    Decide whether a non-roster chunk may remain alongside the dedicated
+    programme roster. Once the authoritative roster is found, the answer must not
+    be contaminated by department-wide or college-wide faculty listings (which
+    name staff who do not teach the programme). Keep only:
+      - individual single-person profile documents (corroborate designations);
+      - chunks that explicitly mention the programme code (programme-scoped
+        context that is not itself a multi-person roster).
+    """
+    meta = meta or {}
+    if "profile" in normalize_text(str(meta.get("filename", ""))):
+        return True
+    body = normalize_text(doc)
+    # A multi-person roster (department/college-wide list) is never kept.
+    if "name of the faculty" in body:
+        return False
+    if body.count("assistant professor") + body.count("associate professor") >= 3:
+        return False
+    if len(re.findall(r"\bprof\b", body)) >= 3:
+        return False
+    return bool(re.search(rf"\b{re.escape(programme)}\b", body))
+
+
+def apply_program_faculty_authority(
+    query: str,
+    final_docs: list[str],
+    final_metas: list[dict],
+    final_dists: list[float | None],
+    where_filter: dict | None,
+    use_personal_docs: bool,
+    top_k: int,
+) -> tuple[list[str], list[dict], list[float | None]]:
+    """
+    A dedicated per-programme faculty roster (e.g. FP.pdf, "Profile of Faculty
+    Members teaching MCA") is the authoritative answer to "who are the faculty of
+    <programme>". These rosters are sparse name + profile-link tables that the
+    cross-encoder scores near zero, so they are cut before display and the answer
+    falls back to a generic, department-wide roster that names staff who do not
+    teach the programme.
+
+    When the query is a faculty/staff question that names such a programme, fetch
+    the dedicated roster by its explicit document marker, PREPEND it, and drop
+    department-wide rosters so they cannot contaminate the programme answer.
+
+    No-op (existing behaviour preserved) whenever the query is not a
+    programme-specific faculty question, or no dedicated roster exists in the
+    index — so it can never degrade the rest of the knowledge base.
+    """
+    programme = _named_programme_for_faculty_query(query)
+    if not programme:
+        return final_docs, final_metas, final_dists
+
+    try:
+        from .bm25_index import get_all_documents_and_metas, load_bm25_index
+        from .bm25_index import _bm25_model
+
+        if _bm25_model is None:
+            load_bm25_index()
+        all_docs, all_metas = get_all_documents_and_metas()
+    except Exception:
+        return final_docs, final_metas, final_dists
+
+    roster: list[tuple[str, dict, float | None]] = []
+    seen: set[str] = set()
+    for doc, meta in zip(all_docs or [], all_metas or []):
+        meta = meta or {}
+        if not _is_program_faculty_roster(doc, programme):
+            continue
+        if not metadata_allows_query(meta, use_personal_docs=use_personal_docs):
+            continue
+        if not metadata_matches_where_filter(meta, where_filter):
+            continue
+        key = candidate_dedupe_key(doc, meta)
+        if key in seen:
+            continue
+        seen.add(key)
+        roster.append((doc, meta, None))
+
+    if not roster:
+        return final_docs, final_metas, final_dists
+
+    out_docs = [d for d, _m, _di in roster]
+    out_metas = [m for _d, m, _di in roster]
+    out_dists = [di for _d, _m, di in roster]
+
+    for doc, meta, dist in zip(final_docs, final_metas, final_dists):
+        key = candidate_dedupe_key(doc, meta)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not _keep_with_program_roster(doc, meta, programme):
+            continue
+        out_docs.append(doc)
+        out_metas.append(meta)
+        out_dists.append(dist)
+
+    return out_docs[:top_k], out_metas[:top_k], out_dists[:top_k]
+
+
 def _chunk_sort_key(meta: dict | None) -> tuple[str, int, int]:
     meta = meta or {}
     try:
@@ -1085,7 +1251,7 @@ def retrieve_chunks(
     original_query: str | None = None,
 ) -> tuple[list[str], list[dict], list[float]]:
     from .config import DEBUG, RERANKER_INPUT_K, RERANKER_OUTPUT_K, KEYWORD_CANDIDATES, RETRIEVAL_CANDIDATES, RERANK_TOP_N
-    from .cache import get_cached_retrieval, set_cached_retrieval
+    from .cache import get_cached_retrieval, set_cached_retrieval, retrieval_scope_label
     from embeddings import EMBEDDING_MODEL, prefix_query_for_search
 
     orig_q = original_query or query
@@ -1096,8 +1262,12 @@ def retrieve_chunks(
         print(f"[DEBUG] Expanded query: {expanded_q}")
         print(f"[DEBUG] BGE prefix applied: {prefix_query_for_search(expanded_q)}")
 
-    intent_label = f"topk_{top_k}_model_{EMBEDDING_MODEL}"
-    
+    # Fold the retrieval SCOPE into the cache key so a personal-docs or
+    # department/year/document_type-filtered query can never be served another
+    # scope's cached chunks (default official+unfiltered → stable shared label).
+    scope_label = retrieval_scope_label(where_filter, use_personal_docs)
+    intent_label = f"topk_{top_k}_model_{EMBEDDING_MODEL}_scope_{scope_label}"
+
     cached_results = get_cached_retrieval(query, intent_label)
     if cached_results is not None:
         if len(cached_results) > 0:
@@ -1244,12 +1414,20 @@ def retrieve_chunks(
     else:
         from reranker import rerank_chunks_with_scores
         _rerank_q = embedding_query or original_query or query
+        # Returning a few extra semantic candidates costs no additional model
+        # inference (the reranker already scores the full input) and prevents a
+        # relevant source just below the display top-K from being lost before
+        # related-chunk expansion.
+        _initial_rerank_top_n = min(
+            len(rerank_input),
+            max(RERANKER_OUTPUT_K, target_top_k * 3),
+        )
         final_docs, final_metas, final_dists, final_scores = rerank_chunks_with_scores(
             query=_rerank_q,
             docs=[item[0] for item in rerank_input],
             metas=[item[1] for item in rerank_input],
             dists=[item[2] for item in rerank_input],
-            top_n=RERANKER_OUTPUT_K,
+            top_n=_initial_rerank_top_n,
         )
 
     if DEBUG and final_docs:
@@ -1388,9 +1566,35 @@ def retrieve_chunks(
             use_personal_docs=use_personal_docs,
         )
         rerank_limit = max(target_top_k * 3, 20 if is_list_query(query) else target_top_k)
-        final_docs, final_metas, final_dists = rerank_results(
-            query, final_docs, final_metas, final_dists, rerank_limit,
-        )
+        # Related-chunk expansion must not replace the semantic cross-encoder
+        # ranking with literal keyword ordering. That caused queries such as
+        # "short history of the college" to discard the correct college-history
+        # page in favour of unrelated books containing "A Short History".
+        # Re-run the same semantic reranker over the expanded candidate set.
+        if final_docs:
+            from reranker import rerank_chunks_with_scores
+
+            _expanded_rerank_q = embedding_query or original_query or query
+            final_docs, final_metas, final_dists, _expanded_scores = rerank_chunks_with_scores(
+                query=_expanded_rerank_q,
+                docs=final_docs,
+                metas=final_metas,
+                dists=final_dists,
+                top_n=rerank_limit,
+            )
+            if _is_college_history_query(orig_q):
+                grounded_history = [
+                    (doc, meta, dist, score)
+                    for doc, meta, dist, score in zip(
+                        final_docs, final_metas, final_dists, _expanded_scores
+                    )
+                    if _has_college_history_evidence(doc, meta)
+                ]
+                if grounded_history:
+                    final_docs = [item[0] for item in grounded_history]
+                    final_metas = [item[1] for item in grounded_history]
+                    final_dists = [item[2] for item in grounded_history]
+                    _expanded_scores = [item[3] for item in grounded_history]
 
     if is_person_lookup_query(query):
         ordered = sorted(
@@ -1425,9 +1629,84 @@ def retrieve_chunks(
     try:
         items = list(zip(final_docs, final_metas, final_dists))
         ranked_items = freshness_rank_items(query, items)
+        # Deterministically drop superseded older versions of the same policy
+        # (audit §2.1) before context is built, so conflict resolution never
+        # rests on crawl-timestamp tie-breaks or the LLM picking a version.
+        before = len(ranked_items)
+        ranked_items = drop_superseded_duplicates(ranked_items)
+        if len(ranked_items) < before:
+            debug_rag(f"dropped {before - len(ranked_items)} superseded duplicate chunk(s)")
         final_docs, final_metas, final_dists = map(list, zip(*ranked_items)) if ranked_items else ([], [], [])
     except Exception as e:
         debug_rag("freshness_rank_items failed; falling back to existing order", e)
+
+    # For explicitly current/present role-holder questions, an older table that
+    # merely labels someone "Principal" must not override a newer succession or
+    # current-tenure statement. Narrow only when such explicit evidence exists;
+    # otherwise preserve the normal person-lookup fallback behaviour.
+    current_role_items = [
+        (doc, meta, dist)
+        for doc, meta, dist in zip(final_docs, final_metas, final_dists)
+        if current_role_evidence_score(orig_q, doc) > 0
+    ]
+    if current_role_items:
+        # The succession sentence may abbreviate the person (for example,
+        # "Fr. Arcadius") while another current official document contains the
+        # full name. Pull only same-person, same-role corroboration so the answer
+        # can use the fullest indexed name without reintroducing older holders.
+        role = normalize_text(str(extract_role_query(orig_q).get("role") or ""))
+        dated_names = [
+            (int(match.group(2)), match.group(1).lower())
+            for doc, _meta, _dist in current_role_items
+            for match in re.finditer(
+                rf"\b(?:Dr\.?|Fr\.?|Br\.?|Sr\.?)\s+([A-Z][A-Za-z'-]+)\b"
+                rf".{{0,100}}?took over as (?:the )?\d+(?:st|nd|rd|th) {re.escape(role)}"
+                r".{0,80}?\b(20\d{2}|19\d{2})\b",
+                doc,
+                flags=re.IGNORECASE,
+            )
+        ]
+        newest_year = max((year for year, _name in dated_names), default=0)
+        first_names = {name for year, name in dated_names if year == newest_year}
+        seen = {
+            candidate_dedupe_key(doc, meta)
+            for doc, meta, _dist in current_role_items
+        }
+        for first_name in sorted(first_names):
+            from .bm25_index import bm25_retrieve
+
+            corroborating_docs, corroborating_metas, _bm25_scores = bm25_retrieve(
+                first_name,
+                top_k=40,
+            )
+            corroborating_dists = [None] * len(corroborating_docs)
+            for doc, meta, dist in zip(corroborating_docs, corroborating_metas, corroborating_dists):
+                if not metadata_allows_query(meta, use_personal_docs=use_personal_docs):
+                    continue
+                if not metadata_matches_where_filter(meta, where_filter):
+                    continue
+                norm = normalize_text(doc)
+                if not role or first_name not in norm or role not in norm:
+                    continue
+                if not re.search(
+                    rf"\b{re.escape(first_name)}\b.{{0,120}}\b{re.escape(role)}\b|"
+                    rf"\b{re.escape(role)}\b.{{0,120}}\b{re.escape(first_name)}\b",
+                    norm,
+                ):
+                    continue
+                key = candidate_dedupe_key(doc, meta)
+                if key in seen:
+                    continue
+                seen.add(key)
+                current_role_items.append((doc, meta, dist))
+                if len(current_role_items) >= 3:
+                    break
+            if len(current_role_items) >= 3:
+                break
+
+        final_docs = [item[0] for item in current_role_items]
+        final_metas = [item[1] for item in current_role_items]
+        final_dists = [item[2] for item in current_role_items]
 
     # KNOWLEDGE HIERARCHY: consult Tier 1 canonical sources first (metadata-filtered
     # retrieval + prepend), gated so lower-priority docs still answer when Tier 1
@@ -1445,6 +1724,23 @@ def retrieve_chunks(
         )
     except Exception as e:
         debug_rag("apply_knowledge_hierarchy failed; falling back to existing order", e)
+
+    # PROGRAMME FACULTY: a "who are the faculty of <programme>" question must be
+    # answered from the dedicated programme roster (e.g. FP.pdf for MCA), not a
+    # department-wide staff list. Wrapped so any failure degrades to the existing
+    # order.
+    try:
+        final_docs, final_metas, final_dists = apply_program_faculty_authority(
+            query=orig_q,
+            final_docs=final_docs,
+            final_metas=final_metas,
+            final_dists=final_dists,
+            where_filter=where_filter,
+            use_personal_docs=use_personal_docs,
+            top_k=max(target_top_k, len(final_docs)),
+        )
+    except Exception as e:
+        debug_rag("apply_program_faculty_authority failed; falling back to existing order", e)
 
     if len(final_docs) > target_top_k:
         final_docs  = final_docs[:target_top_k]

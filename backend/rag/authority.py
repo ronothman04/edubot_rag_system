@@ -237,8 +237,15 @@ def authority_rank(query: str, meta: dict | None) -> int:
     Integer authority tier used as a sort dimension (higher = preferred):
       2 -> Tier 1 doc whose category matches the query intent (and hostel_type
            matches for hostel queries)
-      1 -> Tier 1 doc, no intent match (still preferred over non-Tier-1)
-      0 -> non-Tier-1
+      1 -> Tier 1 doc on a query that IS authority-related but to a different
+           Tier 1 topic (still gently preferred over non-Tier-1)
+      0 -> non-Tier-1, OR a Tier 1 doc on a query with NO authority intent
+
+    The generic tier (1) is gated on the query having authority intent. Without
+    this gate a Prospectus/Handbook chunk received a universal nudge on EVERY
+    query (e.g. "head of Chemistry department", "tell me about the NCC"),
+    letting a canonical source outrank the genuinely-correct non-Tier-1 document
+    on questions that have nothing to do with admissions/rules/hostel.
     """
     match = _hierarchy_match(meta)
     if not match:
@@ -255,7 +262,13 @@ def authority_rank(query: str, meta: dict | None) -> int:
                 return 2
             return 1
         return 2
-    return 1
+
+    # No category match: only grant the generic preference when the query is at
+    # least authority-related; on a query with no authority intent, a Tier 1 doc
+    # gets no boost at all.
+    if intent["categories"]:
+        return 1
+    return 0
 
 
 def authority_score_boost(query: str, meta: dict | None) -> float:

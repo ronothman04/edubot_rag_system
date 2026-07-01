@@ -34,6 +34,10 @@ CACHE_DIR = os.path.join(
 RESPONSE_CACHE_FILE = os.path.join(CACHE_DIR, "response_cache.json")
 RETRIEVAL_CACHE_FILE = os.path.join(CACHE_DIR, "retrieval_cache.json")
 
+# Increment when retrieval/answer semantics change so deployed processes cannot
+# keep serving responses produced by an older pipeline for the duration of TTL.
+CACHE_SCHEMA_VERSION = "3"
+
 # Import TTLs from config (with fallback defaults)
 try:
     from .config import RESPONSE_CACHE_TTL, RETRIEVAL_CACHE_TTL
@@ -77,17 +81,66 @@ def _history_signature(filters: Dict[str, Any] | None) -> str:
     return _sha256(history) if history else ""
 
 
+def _scope_signature(filters: Dict[str, Any] | None) -> str:
+    """Stable hash of the RETRIEVAL SCOPE a cached answer depends on.
+
+    Without this, two requests with the same query text but DIFFERENT scope
+    (personal vs official docs, or a different department/year/document_type
+    filter) collided on the same cache key and could be served each other's
+    documents. The common public case — official scope, no explicit filters —
+    returns "" so cross-user cache sharing for ordinary questions is preserved
+    (a standalone official question keeps a scope-independent key).
+    """
+    if not filters:
+        return ""
+    parts: list[str] = []
+    if filters.get("use_personal_docs"):
+        # Personal docs are user-private: bind the key to the owner.
+        parts.append("personal")
+        parts.append(str(filters.get("user_id") or ""))
+    for key in ("department", "year", "document_type"):
+        value = filters.get(key)
+        if value and str(value).strip().lower() not in ("", "general", "none"):
+            parts.append(f"{key}={str(value).strip().lower()}")
+    return _sha256("|".join(parts)) if parts else ""
+
+
+def retrieval_scope_label(where_filter: Dict[str, Any] | None, use_personal_docs: bool = False) -> str:
+    """Scope component for the Layer-2 retrieval cache key.
+
+    The retrieval layer only sees the resolved ``where_filter`` + the personal
+    flag (not the raw request fields), so we hash those directly. Default
+    (official scope, no filter) → the literal "official" so ordinary questions
+    keep a stable, shareable key.
+    """
+    parts: list[str] = []
+    if use_personal_docs:
+        parts.append("personal")
+    if where_filter:
+        try:
+            parts.append(json.dumps(where_filter, sort_keys=True, ensure_ascii=False))
+        except Exception:
+            parts.append(str(where_filter))
+    if not parts:
+        return "official"
+    return _sha256("|".join(parts))
+
+
 def _response_cache_key(query: str, filters: Dict[str, Any] | None = None) -> str:
-    """§8 Layer 1 key: SHA-256(normalized_query + conversation signature)"""
+    """§8 Layer 1 key: SHA-256(normalized_query + conversation signature + scope)"""
     norm_q = normalize_query(query)
     sig = _history_signature(filters)
-    return _sha256(f"{norm_q}|{sig}")
+    scope = _scope_signature(filters)
+    return _sha256(f"{CACHE_SCHEMA_VERSION}|{norm_q}|{sig}|{scope}")
 
 
 def _retrieval_cache_key(query: str, intent_label: str = "") -> str:
-    """§8 Layer 2 key: SHA-256(normalized_query + intent_label)"""
+    """§8 Layer 2 key: SHA-256(normalized_query + intent_label).
+
+    intent_label already carries top_k, embedding model, AND the retrieval scope
+    (see retrieval.py, which folds in retrieval_scope_label)."""
     norm_q = normalize_query(query)
-    combined = f"{norm_q}|{intent_label}"
+    combined = f"{CACHE_SCHEMA_VERSION}|{norm_q}|{intent_label}"
     return _sha256(combined)
 
 

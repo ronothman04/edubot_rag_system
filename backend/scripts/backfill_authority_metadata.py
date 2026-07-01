@@ -108,6 +108,26 @@ def main(apply: bool) -> None:
     for k, v in by_doc_type.most_common():
         print(f"    {k:<14} {v}")
 
+    # The BM25 index stores a metadata SNAPSHOT in data/bm25_index.pkl. A
+    # metadata-only collection.update does NOT touch it, so the keyword path would
+    # otherwise read stale metadata (e.g. document_type='general' for Tier 1 docs),
+    # disagreeing with ChromaDB. Rebuild it from the freshly-updated collection and
+    # invalidate the query caches so retrieval reflects the new metadata.
+    if apply:
+        print("\n[backfill] re-syncing BM25 index from ChromaDB (metadata snapshot)...")
+        try:
+            from rag.bm25_index import rebuild_bm25_index
+            rebuild_bm25_index()
+            print("[backfill] BM25 index rebuilt.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[backfill] WARNING: BM25 rebuild failed: {exc}")
+        try:
+            from rag.cache import invalidate_on_ingestion
+            invalidate_on_ingestion()
+            print("[backfill] query caches invalidated (Layers 1 & 2).")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[backfill] WARNING: cache invalidation failed: {exc}")
+
 
 if __name__ == "__main__":
     main(apply="--apply" in sys.argv)

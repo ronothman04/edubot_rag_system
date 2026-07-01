@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Regression tests for the four CRITICAL audit fixes.
+Regression tests for critical retrieval and security fixes.
 
 Fix 1: Query-time department namespacing  (rag/main.py wiring -> filters.build_filter)
 Fix 2: Crawler domain hard-lock + SSRF    (ingestion.is_domain_allowed/is_private_ip)
 Fix 3: Authority de-inversion             (rag/freshness.source_priority)
 Fix 4: History-aware response cache key    (rag/cache._response_cache_key)
+Fix 5: College-history retrieval grounding (rag/retrieval.py)
+Fix 6: Current role-holder freshness + clean answer text
 
 Pure-function tests only — no ML models / no network. Run:
     .venv/bin/python tests/test_critical_fixes.py
@@ -134,11 +136,98 @@ def test_fix1_namespacing():
           not (generic and str(generic).lower() in KNOWN_DEPARTMENT_NAMES))
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Fix 5 — College-history queries must reject literal but unrelated matches
+# ──────────────────────────────────────────────────────────────────────────────
+def test_fix5_college_history_grounding():
+    print("\n=== Fix 5: college-history retrieval grounding ===")
+    from rag.retrieval import _is_college_history_query, _has_college_history_evidence
+
+    query = "Can you give a short history of the college?"
+    check("institutional-history query detected", _is_college_history_query(query))
+    check(
+        "crawled college history page accepted",
+        _has_college_history_evidence(
+            "Fr. Joseph Bacchiarello started the college in 1934.",
+            {"source_url": "https://anthonys.ac.in/pages/college/history.php"},
+        ),
+    )
+    check(
+        "unrelated literal 'A Short History' match rejected",
+        not _has_college_history_evidence(
+            "A Short History of English Poetry, Trinity Press.",
+            {"filename": "dob_AddedBooks-2016.pdf"},
+        ),
+    )
+    check(
+        "History-department request remains distinct",
+        not _is_college_history_query("Show the History department syllabus"),
+    )
+
+
+def test_fix6_current_role_and_inline_citations():
+    print("\n=== Fix 6: current role evidence and separate sources ===")
+    from rag.answer_builders import build_current_principal_answer
+    from rag.scoring import current_role_evidence_score
+    from rag.text_utils import postprocess_answer
+
+    query = "Who is the present principal of the college?"
+    current = (
+        "Fr. Arcadius took over as the 9th Principal of the college in June, 2024."
+    )
+    old_table = (
+        "Dr. Br. Albert Longley Dkhar | Principal / Chairman | Examination Committee"
+    )
+    check(
+        "explicit current-tenure evidence outranks an older designation table",
+        current_role_evidence_score(query, current)
+        > current_role_evidence_score(query, old_table),
+    )
+
+    cleaned = postprocess_answer(
+        "The present principal is Fr. Arcadius Puwein "
+        "(College Handbook 2023-24, p. 48, 58, 55)."
+    )
+    check("inline document/page citation removed", "p. 48" not in cleaned and "Handbook" not in cleaned)
+    check("answer fact remains after citation removal", "Fr. Arcadius Puwein" in cleaned)
+
+    attribution_cleaned = postprocess_answer(
+        "Fr. Arcadius is the present principal, as mentioned in the college history page."
+    )
+    check("inline source-attribution clause removed", "mentioned in" not in attribution_cleaned)
+
+    principal_answer = build_current_principal_answer(
+        query,
+        "Fr. Arcadius Puwein SDB, PhD Principal of St. Anthony's College",
+    )
+    check(
+        "current principal builder uses the full supported name",
+        principal_answer == "The present principal of St. Anthony's College is Fr. Arcadius Puwein SDB, PhD.",
+    )
+
+
+def test_fix7_followup_word_boundaries():
+    print("\n=== Fix 7: follow-up reference markers use word boundaries ===")
+    from rag.query_expansion import build_smart_query, is_followup_query
+
+    query = "what facilities does the college provide"
+    history = "User: why should I take admission?\nAssistant: Previous admission answer"
+    retrieval_query, _latest, used_history = build_smart_query(query, history)
+
+    check("facilities is a standalone topic, not an 'it' follow-up", not is_followup_query(query))
+    check("standalone facilities query is preserved", retrieval_query == query)
+    check("unrelated conversation history is not used", used_history is False)
+    check("real 'what about it' reference remains a follow-up", is_followup_query("what about it"))
+
+
 if __name__ == "__main__":
     test_fix3_source_priority()
     test_fix4_cache_key()
     test_fix2_domain_lock()
     test_fix1_namespacing()
+    test_fix5_college_history_grounding()
+    test_fix6_current_role_and_inline_citations()
+    test_fix7_followup_word_boundaries()
 
     print("\n" + "=" * 70)
     if failures:

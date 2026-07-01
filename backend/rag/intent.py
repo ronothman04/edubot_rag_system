@@ -1043,6 +1043,36 @@ def is_programme_specific_query(query: str) -> bool:
     return any(t in q for t in triggers)
 
 
+# Umbrella/general degrees the college offers across many subject specializations.
+# Unlike standalone professional programmes (BTech, BCA, MBA…), a bare query about
+# one of these ("eligibility for BA") is answerable from the general admission
+# policy even when the exact degree token isn't in the top-reranked chunks — so the
+# programme gate must NOT refuse it as "not offered".
+UMBRELLA_DEGREES: set[str] = {"BA", "BSc", "BCom", "MA", "MSc", "MCom"}
+
+
+def query_names_subject(query: str) -> bool:
+    """True if the query names a specific subject/department (e.g. 'BA English')."""
+    q = normalize_text(query)
+    for alias in SUBJECT_ALIASES:
+        if re.search(rf"\b{re.escape(alias)}\b", q):
+            return True
+    for dept in KNOWN_DEPARTMENT_NAMES:
+        if re.search(rf"\b{re.escape(dept)}\b", q):
+            return True
+    return False
+
+
+def is_bare_umbrella_degree_query(query: str) -> bool:
+    """True when the query names a bare umbrella degree (BA/BSc/…) with no specific
+    subject. Such queries are answerable from general admission policy, so the
+    programme-not-found gate should be bypassed for them."""
+    programme = detect_programme(query)
+    if programme not in UMBRELLA_DEGREES:
+        return False
+    return not query_names_subject(query)
+
+
 def extract_subject_from_personal_query(query: str) -> str | None:
     q = normalize_query(query)
 
