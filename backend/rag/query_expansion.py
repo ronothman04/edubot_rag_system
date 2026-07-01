@@ -946,6 +946,35 @@ def rewrite_contextual_followup(query: str, history: str) -> tuple[str, bool]:
     return query, False
 
 
+def rewrite_query_with_history(query: str, history: str) -> str:
+    """
+    Use LLM to rewrite a query to incorporate context from conversation history.
+    If the query is already standalone, returns it unmodified.
+    """
+    from llm import generate
+
+    system_prompt = (
+        "You are an AI query rewriter for a college Q&A system.\n"
+        "Your task is to rewrite the user's latest follow-up query to be a standalone, search-friendly query "
+        "by resolving any coreferences (like 'it', 'they', 'the department', 'the course', 'his', 'her', 'fees', 'rules', 'warden') "
+        "using the conversation history.\n\n"
+        "Rules:\n"
+        "1. If the query is already standalone and does not depend on the history, output the original query exactly.\n"
+        "2. If the query depends on history, rewrite it to be a complete search query (e.g., 'who is the head of department' -> 'who is the head of the Commerce department').\n"
+        "3. Output ONLY the final query text. No preamble, no explanation, no quotes, no conversational filler."
+    )
+
+    user_prompt = f"Conversation History:\n{history}\n\nLatest Query: {query}\n\nStandalone Query:"
+
+    try:
+        response = generate(user_prompt=user_prompt, system_prompt=system_prompt, temperature=0.0)
+        rewritten = response.strip().strip('"\'')
+        return rewritten
+    except Exception as e:
+        print(f"[QueryExpansion] Error in rewrite_query_with_history: {e}")
+        return query
+
+
 def build_smart_query(query: str, history: str) -> tuple[str, str, bool]:
     """Combine followup modifiers with previous question."""
     query = (query or "").strip()
@@ -956,6 +985,15 @@ def build_smart_query(query: str, history: str) -> tuple[str, str, bool]:
     rewritten, was_rewritten = rewrite_contextual_followup(query, history)
     if was_rewritten:
         return rewritten, query, True
+
+    # Use LLM-based coreference resolution and context merging if history is present.
+    if history and history.strip():
+        try:
+            rewritten_llm = rewrite_query_with_history(query, history)
+            if rewritten_llm and rewritten_llm.strip().lower() != query.lower():
+                return rewritten_llm, query, True
+        except Exception as e:
+            print(f"[QueryExpansion] LLM query rewrite failed: {e}")
 
     if is_followup_query(query):
         previous_question = get_last_real_user_question(history)

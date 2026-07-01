@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import random
+import re
 import time
 from typing import Any
 
@@ -840,7 +841,8 @@ def _ask_internal(
         f"Context:\n{context}\n\n"
         + (f"Conversation history:\n{history_block}\n\n" if history_block else "")
         + f"Question:\n{latest_user_request}\n\n"
-        "Answer ONLY based on the context above. If you don't know, use the exact fallback phrase."
+        "Answer ONLY based on the context above. If you don't know, use the exact fallback phrase.\n"
+        "At the very end of your answer, on a new line, write: Citations: [id1, id2, ...] (using the ID from '[Source ID]'). Cite only the sources that directly support your statements."
     )
 
     final_temperature = 0.0 if temperature is None else temperature
@@ -882,6 +884,32 @@ def _ask_internal(
         )
 
     _log_pipeline("llm_call", "LLM response received", answer_length=len(answer or ""))
+
+    citations = []
+    if answer:
+        match = re.search(r"Citations:\s*\[([^\]]+)\]", answer, re.IGNORECASE)
+        if match:
+            citations_str = match.group(1)
+            try:
+                citations = [int(num) for num in re.findall(r"\d+", citations_str)]
+            except Exception:
+                citations = []
+            answer = re.sub(r"\n*Citations:\s*\[[^\]]+\]", "", answer, flags=re.IGNORECASE)
+        else:
+            c_ids = re.findall(r"\[(?:Source\s+)?(\d+)\]", answer, re.IGNORECASE)
+            if c_ids:
+                citations = list(set(int(num) for num in c_ids))
+        
+        # Clean up any residual inline citations in answer
+        answer = re.sub(r"\[Source\s+\d+\]", "", answer, flags=re.IGNORECASE)
+        answer = re.sub(r"\[\d+\]", "", answer)
+        answer = re.sub(r"\(\s*Source\s+\d+\s*\)", "", answer, flags=re.IGNORECASE)
+
+    if citations:
+        sources = [s for s in sources if s.get("id") in citations]
+        # Re-index sources to be sequential
+        for new_id, s in enumerate(sources, start=1):
+            s["id"] = new_id
 
     answer = postprocess_answer(answer)
     # Backstop: if the model still rendered a structurally-broken table (placeholder

@@ -209,15 +209,34 @@ def test_fix6_current_role_and_inline_citations():
 def test_fix7_followup_word_boundaries():
     print("\n=== Fix 7: follow-up reference markers use word boundaries ===")
     from rag.query_expansion import build_smart_query, is_followup_query
+    from unittest.mock import patch
 
     query = "what facilities does the college provide"
     history = "User: why should I take admission?\nAssistant: Previous admission answer"
-    retrieval_query, _latest, used_history = build_smart_query(query, history)
+    with patch("llm.generate", return_value=query):
+        retrieval_query, _latest, used_history = build_smart_query(query, history)
 
     check("facilities is a standalone topic, not an 'it' follow-up", not is_followup_query(query))
     check("standalone facilities query is preserved", retrieval_query == query)
     check("unrelated conversation history is not used", used_history is False)
     check("real 'what about it' reference remains a follow-up", is_followup_query("what about it"))
+
+
+def test_fix8_followup_topic_resolution():
+    print("\n=== Fix 8: follow-up topic resolution via LLM query rewriting ===")
+    from rag.query_expansion import build_smart_query
+    from unittest.mock import patch
+
+    query = "who is the head of department"
+    history = "User: tell me about the Department of commerce\nAssistant: The Commerce department was established in 1948."
+
+    with patch("llm.generate", return_value="who is the head of the Commerce department") as mock_gen:
+        retrieval_query, latest, used_history = build_smart_query(query, history)
+        
+        check("retrieval query incorporates department context", "Commerce" in retrieval_query)
+        check("retrieval query is rewritten correctly", retrieval_query == "who is the head of the Commerce department")
+        check("used_history is flagged as True", used_history is True)
+        check("mock_gen was called", mock_gen.called)
 
 
 if __name__ == "__main__":
@@ -228,6 +247,7 @@ if __name__ == "__main__":
     test_fix5_college_history_grounding()
     test_fix6_current_role_and_inline_citations()
     test_fix7_followup_word_boundaries()
+    test_fix8_followup_topic_resolution()
 
     print("\n" + "=" * 70)
     if failures:

@@ -681,7 +681,7 @@ function Message({
                           <span className="text-[10px] text-slate-400 dark:text-slate-500 font-medium">
                             {isWebsiteSource(source, filename) ? "Website page" : "Document reference"}
                           </span>
-                          {page && (
+                          {page && !isWebsiteSource(source, filename) && (
                             <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-400">
                               Page {page}
                             </span>

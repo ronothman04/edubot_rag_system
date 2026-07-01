@@ -325,6 +325,9 @@ def remove_answer_metadata(answer: str) -> str:
             continue
         lines.append(line)
     answer = "\n".join(lines)
+    answer = re.sub(r"\[Source\s+\d+\]", "", answer, flags=re.IGNORECASE)
+    answer = re.sub(r"\[\d+\]", "", answer)
+    answer = re.sub(r"\(\s*Source\s+\d+\s*\)", "", answer, flags=re.IGNORECASE)
     answer = re.sub(r"(?i)\bDocument:\s*[^\n]+", "", answer)
     answer = re.sub(r"(?i)\bPage:\s*\d+", "", answer)
     answer = re.sub(r"(?i)\bSection:\s*[^\n]+", "", answer)

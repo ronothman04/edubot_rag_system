@@ -36,7 +36,7 @@ RETRIEVAL_CACHE_FILE = os.path.join(CACHE_DIR, "retrieval_cache.json")
 
 # Increment when retrieval/answer semantics change so deployed processes cannot
 # keep serving responses produced by an older pipeline for the duration of TTL.
-CACHE_SCHEMA_VERSION = "3"
+CACHE_SCHEMA_VERSION = "4"
 
 # Import TTLs from config (with fallback defaults)
 try:
