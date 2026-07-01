@@ -159,9 +159,27 @@ def document_year_for_freshness(meta: dict | None, text: str = "") -> int | None
     """Year used to compute the recency boost. Prefers the trusted metadata year;
     falls back to an in-text year ONLY when the chunk is not historical prose, so
     historical sections ("Founded in 1934, expanded in 2020") are never boosted
-    as if freshly published."""
+    as if freshly published.
+
+    Forward guard (M-2): a trusted year in the FUTURE relative to the runtime year
+    only earns a recency boost when it is genuinely supported (a current
+    academic-session prospectus/admission document, or one the audit marked
+    supported). An unsupported future year — a validity/expiry horizon, a forward
+    reference, or a stray table number — is replaced by the document's best
+    non-future year (or no boost at all). Boundaries are runtime-derived, so this
+    stays correct in future years without code changes.
+    """
     trusted = document_year_from_metadata(meta)
     if trusted:
+        from .future_dates import (
+            best_true_year,
+            current_year,
+            future_year_is_supported,
+        )
+
+        cy = current_year()
+        if trusted > cy and not future_year_is_supported(trusted, text, meta, cy):
+            return best_true_year(trusted, text, meta, cy)
         return trusted
     if looks_historical(text):
         return None
