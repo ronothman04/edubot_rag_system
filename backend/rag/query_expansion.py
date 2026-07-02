@@ -38,6 +38,7 @@ from .intent import (
     is_club_query,
     is_cell_or_committee_query,
     is_activity_query,
+    is_facilities_query,
     is_list_query,
     is_attendance_query,
     is_specific_query,
@@ -51,14 +52,184 @@ from .intent import (
     extract_staff_department_from_query,
     extract_department_from_query,
     classify_admission_query,
+    detect_programme,
+    PROGRAMME_SYNONYMS,
 )
 from .text_utils import (
     clean_text,
+    distill_embedding_query,
     important_words,
     normalize_query,
     normalize_query_text,
     normalize_text,
 )
+
+
+_SEMESTER_NUMBERS = {
+    "first": ("1", "i"),
+    "second": ("2", "ii"),
+    "third": ("3", "iii"),
+    "fourth": ("4", "iv"),
+    "fifth": ("5", "v"),
+    "sixth": ("6", "vi"),
+    "seventh": ("7", "vii"),
+    "eighth": ("8", "viii"),
+}
+
+
+def extract_query_constraints(query: str) -> dict[str, Any]:
+    """Extract retrieval constraints without turning them into metadata filters.
+
+    Not every indexed document has reliable semester/programme metadata.  These
+    constraints therefore remain in the lexical/semantic query and evidence
+    checks instead of becoming broad Chroma filters that could remove the right
+    chunk.  Caller-supplied metadata filters remain authoritative.
+    """
+    q = normalize_query(query)
+    programme = detect_programme(q)
+    department = extract_department_from_query(q)
+
+    semester = None
+    for ordinal in _SEMESTER_NUMBERS:
+        if f"{ordinal} semester" in q:
+            semester = ordinal
+            break
+
+    academic_level = None
+    if re.search(r"\b(postgraduate|post graduate|masters?|ma|msc|mcom|mca|mba|pgdca)\b", q):
+        academic_level = "postgraduate"
+    elif re.search(r"\b(undergraduate|under graduate|bachelors?|ba|bsc|bcom|bca|bba)\b", q):
+        academic_level = "undergraduate"
+
+    document_type = None
+    if re.search(r"\b(syllabus|syllabi|curriculum|curricula|papers?|modules?)\b", q) or (
+        "semester" in q and re.search(r"\bsubjects?\b", q)
+    ):
+        document_type = "syllabus"
+    else:
+        for candidate in ("prospectus", "handbook", "policy", "report", "notice"):
+            if re.search(rf"\b{candidate}s?\b", q):
+                document_type = candidate
+                break
+
+    requested_output = "list" if is_list_query(q) else None
+    if is_head_query(q) or is_person_lookup_query(q):
+        requested_output = "person"
+    elif is_fee_query(q):
+        requested_output = "amount" if any(term in q for term in ("how much", "amount", "cost")) else "fee_details"
+    elif is_procedural_query(q):
+        requested_output = "procedure"
+
+    return {
+        "programme": programme,
+        "department": department,
+        "semester": semester,
+        "academic_level": academic_level,
+        "year": next(iter(re.findall(r"\b(?:19|20)\d{2}\b", q)), None),
+        "document_type": document_type,
+        "requested_output": requested_output,
+        "course_codes": re.findall(r"\b[A-Za-z]{2,}(?:[- ]?[A-Za-z]{1,4})?[- ]?\d{2,4}(?:\.\d+)?\b", str(query or "")),
+    }
+
+
+def build_focused_retrieval_query(query: str) -> str:
+    """Build a short semantic query while preserving every extracted constraint.
+
+    The dense retriever and cross-encoder need a canonical expression of intent,
+    not a long synonym tail.  BM25 continues to receive the expanded query.  The
+    function uses small intent concepts and extracted entities; it contains no
+    programme, department, document-title, or question-specific rules.
+    """
+    base = normalize_query(distill_embedding_query(query))
+    constraints = extract_query_constraints(base)
+    intents = detect_query_intents(base)
+    primary = get_primary_intent(intents)
+
+    # Unknown/general questions already have a meaningful dense representation.
+    # Rebuilding them from important words can remove relational language (for
+    # example "when do classes commence") and reduce recall. Canonical rebuilding
+    # is reserved for a detected intent or role lookup.
+    if primary == "general" and not is_head_query(base):
+        return base
+
+    parts: list[str] = []
+    programme = constraints["programme"]
+    if programme:
+        parts.append(programme)
+        synonyms = PROGRAMME_SYNONYMS.get(programme, [])
+        full_form = next((value for value in synonyms if len(value.split()) > 1), None)
+        parts.append(full_form or programme)
+    if constraints["department"]:
+        parts.append(str(constraints["department"]))
+    if constraints["academic_level"]:
+        parts.append(str(constraints["academic_level"]))
+    if constraints["semester"]:
+        parts.append(f"{constraints['semester']} semester")
+    if constraints["year"]:
+        parts.append(str(constraints["year"]))
+    parts.extend(str(code) for code in constraints["course_codes"])
+
+    curricular = bool(re.search(
+        r"\b(subjects?|syllabus|syllabi|curriculum|curricula|papers?|modules?|semester)\b",
+        base,
+    ))
+    if primary == "fees":
+        parts.append("fee structure charges")
+    elif primary == "eligibility":
+        parts.append("admission eligibility requirements")
+    elif primary == "documents":
+        parts.append("required documents")
+    elif primary == "staff":
+        parts.append("faculty teaching staff")
+        if is_list_query(base):
+            parts.append("name designation teaching staff")
+    elif primary == "hostel":
+        parts.append("hostel accommodation")
+    elif primary == "attendance":
+        parts.append("attendance requirements")
+    elif primary == "exam":
+        parts.append("examination rules")
+    elif primary == "committee":
+        parts.append("committee members")
+    elif primary == "contact":
+        parts.append("contact information")
+    elif primary == "facilities":
+        parts.append("campus facilities amenities")
+    elif primary == "courses" and curricular:
+        parts.append("syllabus course structure")
+    elif primary == "courses":
+        parts.append("programmes courses offered")
+    elif is_head_query(base):
+        role = str(extract_role_query(base).get("role") or "head")
+        parts.append(f"{role} name designation")
+        if role in {"hod", "head"}:
+            parts.append("head of department")
+
+    if re.search(r"\bwhat\s+is\s+hod\b|\bmeaning\s+of\s+hod\b|\bhod\s+full\s+form\b", base):
+        parts.append("head of department abbreviation meaning")
+    if re.search(r"\bvocational\s+training\b|\bvtc\b", base):
+        parts.append("vtc vocational training course paper code")
+    if is_staff_query(base):
+        parts.append("department head teaching staff")
+
+    if constraints["document_type"]:
+        parts.append(str(constraints["document_type"]))
+    if constraints["requested_output"] == "list":
+        parts.append("list")
+
+    # Preserve discriminating free-text entities/topics not captured above.
+    parts.extend(important_words(base))
+    if not parts:
+        return base
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        value = normalize_query(str(part))
+        if value and value not in seen:
+            seen.add(value)
+            deduped.append(value)
+    return " ".join(deduped) or base
 
 QUERY_EXPANSIONS: dict[str, str] = {
     # Common college document vocabulary
@@ -425,7 +596,7 @@ def build_smart_retrieval_query(query: str) -> str:
     primary = get_primary_intent(intents)
     entities = extract_entities(base_query)
     
-    additions: list[str] = [base_query]
+    additions: list[str] = [base_query, build_focused_retrieval_query(base_query)]
     
     # Handle Department/Course context
     entity_context = ""
@@ -447,6 +618,7 @@ def build_smart_retrieval_query(query: str) -> str:
         "department": "departments list name academic departments degree programmes course list",
         "committee": "committee committees cells members list chairman coordinator",
         "activity": "activities sports events games clubs student corner",
+        "facilities": "campus facilities amenities infrastructure services",
     }
     
     # Expand for each detected intent, focusing on the primary one
@@ -469,6 +641,7 @@ def build_smart_retrieval_query(query: str) -> str:
 
     # Fallback to important words
     additions.extend(important_words(base_query))
+
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -719,6 +892,11 @@ def is_followup_query(query: str) -> bool:
     q = normalize_query_text(query)
     if not q:
         return False
+    # Explicit discourse markers remain follow-ups even when the user names the
+    # new subtopic ("what about the fees?").  Checking topic words first used to
+    # misclassify exactly those useful elliptical turns as standalone queries.
+    if re.search(r"^(?:and\b|what\s+about\b|how\s+about\b|(?:does|do|is|are)\s+(?:it|that|this|they)\b)", q):
+        return True
     topic_words = [
         "committee", "cell", "department", "departments", "course", "courses",
         "programme", "programmes", "program", "programs", "fee", "fees",
@@ -975,6 +1153,49 @@ def rewrite_query_with_history(query: str, history: str) -> str:
         return query
 
 
+def rewrite_elliptical_followup(query: str, history: str) -> tuple[str, bool]:
+    """Resolve short follow-ups from prior structured entities without an LLM."""
+    previous = get_last_real_user_question(history)
+    if not previous:
+        return query, False
+
+    q_norm = normalize_query(query)
+    previous_constraints = extract_query_constraints(previous)
+    current_constraints = extract_query_constraints(query)
+    inherited: list[str] = []
+    for key in ("programme", "department", "academic_level", "semester", "year", "document_type"):
+        value = previous_constraints.get(key)
+        if value and not current_constraints.get(key):
+            inherited.append(f"{value} semester" if key == "semester" else str(value))
+
+    current_intents = detect_query_intents(q_norm)
+    missing_role_target = is_head_query(q_norm) and not current_constraints.get("department")
+    context_sensitive_intent = any(intent in {
+        "fees", "courses", "staff", "eligibility", "documents",
+    } for intent in current_intents)
+    short_topic_followup = (
+        len(q_norm.split()) <= 8
+        and bool(inherited)
+        and (context_sensitive_intent or missing_role_target)
+    )
+    if not is_followup_query(query) and not short_topic_followup:
+        return query, False
+
+    stripped = re.sub(
+        r"^(?:and\s+|what\s+about\s+|how\s+about\s+)",
+        "",
+        str(query or "").strip(),
+        flags=re.IGNORECASE,
+    ).strip(" ?.!,;:")
+    if normalize_query(stripped) in {"it", "that", "this", "same", "them", "those"}:
+        return previous, True
+    if not stripped:
+        return previous, True
+    if inherited:
+        return f"{stripped} for {' '.join(inherited)}", True
+    return previous if is_followup_query(query) else query, is_followup_query(query)
+
+
 def build_smart_query(query: str, history: str) -> tuple[str, str, bool]:
     """Combine followup modifiers with previous question."""
     query = (query or "").strip()
@@ -986,8 +1207,16 @@ def build_smart_query(query: str, history: str) -> tuple[str, str, bool]:
     if was_rewritten:
         return rewritten, query, True
 
-    # Use LLM-based coreference resolution and context merging if history is present.
-    if history and history.strip():
+    # Resolve ordinary elliptical turns deterministically.  This preserves named
+    # programme/department/semester constraints and remains available when the
+    # external LLM provider is unavailable.
+    rewritten, was_rewritten = rewrite_elliptical_followup(query, history)
+    if was_rewritten:
+        return rewritten, query, True
+
+    # Reserve LLM rewriting for genuinely unresolved reference-bearing turns;
+    # standalone questions with history must not incur a network call or change.
+    if history and history.strip() and is_followup_query(query):
         try:
             rewritten_llm = rewrite_query_with_history(query, history)
             if rewritten_llm and rewritten_llm.strip().lower() != query.lower():

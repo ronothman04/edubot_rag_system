@@ -274,7 +274,7 @@ PROCEDURAL_QUERY_MARKERS = [
 INTENT_PRIORITY = [
     "fees", "eligibility", "documents", "courses", "programme", 
     "department", "staff", "hostel", "attendance", "exam", 
-    "admission", "contact", "activity", "committee"
+    "admission", "contact", "facilities", "activity", "committee"
 ]
 
 def detect_query_intents(query: str) -> list[str]:
@@ -285,6 +285,7 @@ def detect_query_intents(query: str) -> list[str]:
     if is_fee_query(query): intents.append("fees")
     if is_eligibility_query(query): intents.append("eligibility")
     if is_contact_query(query): intents.append("contact")
+    if is_facilities_query(query): intents.append("facilities")
     if is_hostel_query_local(query): intents.append("hostel")
     if is_attendance_query(query): intents.append("attendance")
     if is_exam_query(query): intents.append("exam")
@@ -309,11 +310,19 @@ def get_primary_intent(intents: list[str]) -> str:
 def is_eligibility_query(query: str) -> bool:
     """Check if query is about criteria/eligibility."""
     q = normalize_text(query)
-    return any(term in q for term in ["eligible", "eligibility", "criteria", "requirement", "qualification", "marks", "percentage"])
+    return any(term in q for term in [
+        "eligible", "eligibility", "criteria", "requirement", "qualification",
+        "qualifying examination", "minimum qualification", "required subject",
+        "required subjects", "marks", "percentage",
+    ])
 
 def is_exam_query(query: str) -> bool:
     """Check if query is about examinations."""
-    q = normalize_text(query)
+    q = normalize_query(query)
+    if "qualifying examination" in q and not any(
+        term in q for term in ["exam rules", "examination rules", "sessional", "internal assessment", "test"]
+    ):
+        return False
     return any(term in q for term in ["exam", "examination", "sessional", "internal assessment", "test"])
 
 def is_document_query(query: str) -> bool:
@@ -323,8 +332,10 @@ def is_document_query(query: str) -> bool:
 
 def is_hostel_query_local(query: str) -> bool:
     """Check if query is about hostel."""
-    q = normalize_text(query)
-    return any(term in q for term in ["hostel", "accommodation", "warden", "hall"])
+    q = normalize_query(query)
+    return any(term in q for term in [
+        "hostel", "accommodation", "residence", "residential", "warden", "hall",
+    ])
 
 def extract_entities(query: str) -> dict[str, str | None]:
     """Extract department, course, or specific topics from the query."""
@@ -449,28 +460,42 @@ def is_vague_college_question(query: str) -> bool:
 
 def is_contact_query(query: str) -> bool:
     """Check if query is looking for telephone numbers, emails, addresses."""
-    q = normalize_text(query)
+    q = normalize_query(query)
     if is_website_links_query(query):
         return False
     if any(word in q for word in ["committee", "cell", "department", "club", "quick link", "quick links", "student corner"]):
         return False
     contact_terms = [
         "contact", "email", "mail", "phone", "mobile", "telephone",
-        "address", "fax", "helpline", "office number"
+        "address", "location", "located", "fax", "helpline", "office number"
     ]
     if any(term in q for term in contact_terms):
+        return True
+    if any(phrase in q for phrase in [
+        "reach the college", "reach college", "reach the office",
+        "get in touch", "contact the college", "contact college",
+    ]):
         return True
     return bool(re.search(r"\bph\b", q))
 
 
+def is_facilities_query(query: str) -> bool:
+    """Check for campus facility/amenity requests."""
+    q = normalize_query(query)
+    return any(term in q for term in [
+        "facility", "facilities", "amenity", "amenities", "campus services",
+        "campus infrastructure",
+    ])
+
+
 def is_department_query(query: str) -> bool:
     """Check if query mentions department(s)."""
-    return any(word in normalize_text(query) for word in ["department", "departments"])
+    return any(word in normalize_query(query) for word in ["department", "departments"])
 
 
 def is_head_query(query: str) -> bool:
     """Check if query is looking for leading figures (head, HOD, warden, coordinator)."""
-    q = normalize_text(query)
+    q = normalize_query(query)
     return bool(re.search(
         r"\b(head|hod|director|incharge|principal|vice principal|chairman|chairperson|secretary|coordinator|warden|superintendent)\b"
         r"|in\s+charge|hostel\s+warden|hall\s+warden",
@@ -506,11 +531,16 @@ def extract_query_entities(query: str) -> dict[str, Any]:
 
 def is_person_lookup_query(query: str) -> bool:
     """Check if query looks up names of administrative or hostel heads."""
-    q = (query or "").lower().strip()
+    q = normalize_query(query)
     has_lookup_phrase = any(re.search(pattern, q) for pattern in PERSON_LOOKUP_PATTERNS)
     has_title = any(title in q for title in PERSON_LOOKUP_TITLES)
     has_name_request = bool(re.search(r"\bname\b", q))
-    return has_title and (has_lookup_phrase or has_name_request)
+    implied_role_lookup = bool(re.search(
+        r"\b(?:hod|head of department|department head|principal|warden|coordinator)\b"
+        r"\s+(?:of|for|in)\s+",
+        q,
+    ))
+    return has_title and (has_lookup_phrase or has_name_request or implied_role_lookup)
 
 
 def get_requested_person_title(query: str) -> str:
@@ -532,7 +562,7 @@ def _clean_role_target(value: str) -> str | None:
         maxsplit=1,
     )[0]
     value = re.sub(
-        r"\b(the|a|an|name|of|for|in|at|college|department|dept|who|is|are|members?)\b",
+        r"\b(the|a|an|name|of|for|in|at|college|department|dept|who|is|are|members?|head|hod)\b",
         " ",
         value,
     )
@@ -542,7 +572,7 @@ def _clean_role_target(value: str) -> str | None:
 
 def extract_role_query(query: str) -> dict[str, str | None]:
     """Identify if role keyword matches ROLE_QUERY_ALIASES and extract target."""
-    q = str(query or "").lower()
+    q = normalize_query(query)
     q = re.sub(r"[^a-z0-9\s&.'?-]", " ", q)
     q = re.sub(r"\s+", " ", q).strip()
     if not q:
@@ -585,13 +615,34 @@ def is_broad_department_list_query(query: str) -> bool:
 
 
 def is_course_query(query: str) -> bool:
-    """Check if query mentions course/programme keywords."""
+    """Check if a query requests programmes or curricular content.
+
+    ``subject`` by itself is ambiguous (it also occurs in faculty profiles and
+    eligibility prose), so it is treated as curriculum only when paired with a
+    list/semester/programme signal.  Strong curricular nouns such as syllabus,
+    curriculum, paper and module are independently sufficient.
+    """
     q = normalize_query(query)
-    return any(word in q for word in [
+    if any(word in q for word in [
         "course", "courses", "program", "programs", "programme", "programmes",
         "degree", "degrees", "ug", "undergraduate", "pg", "postgraduate", "diploma", "certificate",
         "vtc", "vocational", "vocational training", "vocational course",
-    ])
+        "syllabus", "syllabi", "curriculum", "curricula", "paper", "papers",
+        "module", "modules",
+    ]):
+        return True
+
+    has_subject = bool(re.search(r"\bsubjects?\b", q))
+    has_curriculum_scope = bool(re.search(
+        r"\b(semester|sem|first|second|third|fourth|fifth|sixth|seventh|eighth|"
+        r"bca|mca|bba|mba|bsc|msc|bcom|mcom|ba|ma|bachelor|master|degree)\b",
+        q,
+    ))
+    has_list_form = bool(re.search(
+        r"\b(what|which|list|show|all|available)\b|\bare\s+there\b",
+        q,
+    ))
+    return has_subject and (has_curriculum_scope or has_list_form)
 
 
 def is_postgraduate_course_query(query: str) -> bool:
@@ -610,8 +661,8 @@ def is_certificate_course_query(query: str) -> bool:
 
 def is_fee_query(query: str) -> bool:
     """Check if query mentions fee details."""
-    q = normalize_text(query)
-    return any(word in q for word in ["fee", "fees", "payment", "payments"])
+    q = normalize_query(query)
+    return any(word in q for word in ["fee", "fees", "payment", "payments", "charges"])
 
 
 def is_fee_table_query(query: str) -> bool:
@@ -646,7 +697,7 @@ def is_club_query(query: str) -> bool:
 
 def is_cell_or_committee_query(query: str) -> bool:
     """Check if query mentions committees or administrative cells."""
-    q = normalize_text(query)
+    q = normalize_query(query)
     return any(term in q for term in ["cell", "cells", "committee", "committees"])
 
 
@@ -673,6 +724,18 @@ def is_list_query(query: str) -> bool:
         "show departments", "different", "breakdown", "table", "details",
     ]
     has_list_marker = any(word in q for word in list_words)
+    if is_course_query(query) and re.search(
+        r"\b(?:what|which)\s+(?:subjects?|courses?|papers?|modules?)\s+are\s+there\b|"
+        r"\b(?:subjects?|courses?|papers?|modules?)\s+(?:are\s+)?(?:there|available|offered)\b|"
+        r"\b(?:what|which)\s+(?:vocational\s+training\s+)?courses?\s+are\s+offered\b",
+        q,
+    ):
+        has_list_marker = True
+    if is_staff_query(query) and re.search(
+        r"\bwho\s+(?:teaches?|are\s+the\s+(?:faculty|teachers?|staff))\b",
+        q,
+    ):
+        has_list_marker = True
     has_generic_list_intent = ("list" in q or "all" in q) and any(term in q for term in ["rule", "rules", "guideline", "guidelines", "requirement", "requirements", "eligibility", "document", "documents", "fee", "fees", "course", "courses", "department", "departments", "hostel", "hostels"])
     return (
         is_broad_department_list_query(query)
@@ -686,6 +749,7 @@ def is_list_query(query: str) -> bool:
         or (is_hostel_query(query) and has_list_marker)
         or (is_staff_query(query) and has_list_marker)
         or (is_contact_query(query) and has_list_marker)
+        or (is_facilities_query(query) and has_list_marker)
         or (is_attendance_query(query) and has_list_marker)
         or has_generic_list_intent
     )
@@ -694,7 +758,10 @@ def is_list_query(query: str) -> bool:
 
 def is_attendance_query(query: str) -> bool:
     """Check if query refers to attendance regulations."""
-    return "attendance" in normalize_text(query)
+    q = normalize_query(query)
+    return bool(re.search(r"\b(attendance|attend|attending|absence|absent)\b", q)) or (
+        "classes" in q and any(term in q for term in ["how many", "minimum", "required", "must"])
+    )
 
 
 def is_specific_query(query: str) -> bool:
@@ -782,18 +849,20 @@ def extract_staff_department_from_query(query: str) -> str | None:
 
 def chunk_has_staff_evidence(text: str) -> bool:
     """Verify if the chunk has faculty or HOD lists."""
-    t = normalize_query(text)
+    t = normalize_text(text)
     markers = [
-        "teaching staff", "faculty", "faculty members", "faculty member",
-        "professor", "assistant professor", "associate professor", "lecturer",
+        "faculty members", "faculty member", "assistant professor",
+        "associate professor", "lecturer",
         "department faculty", "hod", "head of department", "head ug", "director pg",
     ]
-    return any(m in t for m in markers)
+    teaching_staff = bool(re.search(r"(?<!non )\bteaching staff\b", t))
+    repeated_professors = len(re.findall(r"\bprof(?:essor)?\.?\b", t)) >= 2
+    return teaching_staff or repeated_professors or any(m in t for m in markers)
 
 
 def chunk_looks_like_course_only(text: str) -> bool:
     """Identify if the chunk lists subject structures/syllabus without listing staff names."""
-    t = normalize_query(text)
+    t = normalize_text(text)
     course_markers = [
         "disciplines for fyu", "disciplines for fy", "courses offered",
         "programme structure", "program structure", "subject combination",
@@ -1254,8 +1323,11 @@ def classify_query_intent(query: str) -> str:
 
 def is_hostel_query(query: str) -> bool:
     """Check if query is about the hostel facility."""
-    q = normalize_text(query)
-    return any(term in q for term in ["hostel", "accommodation", "hosteller", "boys hostel", "girls hostel"])
+    q = normalize_query(query)
+    return any(term in q for term in [
+        "hostel", "accommodation", "residence", "residential", "hosteller",
+        "boys hostel", "girls hostel",
+    ])
 
 
 def is_procedural_query(query: str) -> bool:
@@ -1661,4 +1733,3 @@ for name in _cached_list_funcs:
                 return tuple(res) if isinstance(res, list) else res
             return lambda q: list(_tuple_cached(q))
         globals()[name] = _list_wrapper()
-

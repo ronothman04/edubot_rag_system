@@ -54,7 +54,7 @@ from .config import (
     MAX_DISTANCE,
 )
 from .schemas import make_response
-from .text_utils import distill_embedding_query, normalize_query, postprocess_answer
+from .text_utils import normalize_query, postprocess_answer
 from .prompts import LLM_SYSTEM
 from .intent import (
     is_homework_or_assignment,
@@ -89,6 +89,7 @@ from .query_expansion import (
     get_casual_response,
     build_smart_query,
     build_smart_retrieval_query,
+    build_focused_retrieval_query,
     build_role_retrieval_query,
     expand_query,
     smart_clarification_response,
@@ -152,6 +153,37 @@ def verify_faithfulness_logging(answer: str, context: str) -> None:
             continue
         if token.lower() not in context_lower:
             logging.warning(f"[EduBot Faithfulness WARNING] Token '{token}' in LLM answer does not appear in retrieved context (potential hallucination).")
+
+
+def resolve_answer_citations(answer: str, sources: list[dict]) -> tuple[str, list[dict]]:
+    """Remove model citation markup and retain only valid cited source records.
+
+    Invalid citation IDs never erase otherwise valid provenance: if the model
+    emits only unknown IDs, the complete retrieved source list is retained.
+    Source IDs are not renumbered because they identify the context presented to
+    the model.
+    """
+    text = str(answer or "")
+    citation_ids: list[int] = []
+    match = re.search(r"Citations:\s*\[([^\]]*)\]", text, re.IGNORECASE)
+    if match:
+        citation_ids = [int(num) for num in re.findall(r"\d+", match.group(1))]
+        text = re.sub(r"\n*Citations:\s*\[[^\]]*\]", "", text, flags=re.IGNORECASE)
+    else:
+        citation_ids = [
+            int(num)
+            for num in re.findall(r"\[(?:Source\s+)?(\d+)\]", text, re.IGNORECASE)
+        ]
+
+    text = re.sub(r"\[Source\s+\d+\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[\d+\]", "", text)
+    text = re.sub(r"\(\s*Source\s+\d+\s*\)", "", text, flags=re.IGNORECASE)
+
+    valid_ids = {int(source.get("id")) for source in sources if str(source.get("id", "")).isdigit()}
+    requested = set(citation_ids) & valid_ids
+    if requested:
+        return text, [source for source in sources if source.get("id") in requested]
+    return text, sources
 
 
 
@@ -389,18 +421,19 @@ def _ask_internal(
     # Distill the dense-retrieval query so verbose, conversational phrasing
     # ("Can you give a brief description of …") collapses to its salient phrase,
     # which embeds sharply. Keyword/BM25 retrieval below keeps the expanded query.
-    embedding_query_short = normalize_query(distill_embedding_query(retrieval_query_raw))
+    embedding_query_short = build_focused_retrieval_query(retrieval_query_raw)
     retrieval_query = build_smart_retrieval_query(retrieval_query_raw)
     retrieval_query = normalize_query(retrieval_query)
 
-    all_intents = detect_query_intents(query)
+    understanding_query = normalize_query(retrieval_query_raw)
+    all_intents = detect_query_intents(understanding_query)
     primary_intent = get_primary_intent(all_intents)
-    entities = extract_entities(query)
+    entities = extract_entities(understanding_query)
     _log_pipeline("intent", f"Detected intents: {all_intents}, primary: {primary_intent}",
                   entities=entities)
 
     # ── Top-k selection ──────────────────────────────────────────────────────
-    is_list = is_list_query(query)
+    is_list = is_list_query(understanding_query)
     from .config import RERANKER_INPUT_K, RERANKER_OUTPUT_K, MIN_RERANKER_SCORE, DEBUG
     try:
         retrieval_count = int(top_k or RERANKER_INPUT_K)
@@ -467,7 +500,7 @@ def _ask_internal(
     debug_rag(f"retrieved chunks={len(docs)}")
 
     # Pre-filtering for staff
-    docs, metas, dists = filter_staff_docs(query, docs, metas, dists)
+    docs, metas, dists = filter_staff_docs(understanding_query, docs, metas, dists)
 
     # ── §3 Stage 7 + 8: Cross-encoder reranking + Confidence gate ────────
     if docs:
@@ -490,12 +523,12 @@ def _ask_internal(
         # If the user names a specific degree programme (e.g. BCA, B.Tech) and that
         # programme does not appear in the retrieved resources, do NOT let the LLM
         # generate admission/eligibility/fee details for it.
-        _programme = detect_programme(query)
+        _programme = detect_programme(understanding_query)
         if (
             _programme
-            and is_programme_specific_query(query)
-            and not is_bare_umbrella_degree_query(query)
-            and not (_programme in UMBRELLA_DEGREES and query_names_subject(query))
+            and is_programme_specific_query(understanding_query)
+            and not is_bare_umbrella_degree_query(understanding_query)
+            and not (_programme in UMBRELLA_DEGREES and query_names_subject(understanding_query))
             and not programme_grounded_in_docs(_programme, reranked_docs)
         ):
             _log_pipeline("programme_gate", "Programme not present in retrieved resources",
@@ -572,12 +605,12 @@ def _ask_internal(
 
     if not docs:
         # Programme named but nothing retrieved → cannot verify the programme exists.
-        _programme = detect_programme(query)
+        _programme = detect_programme(understanding_query)
         if (
             _programme
-            and is_programme_specific_query(query)
-            and not is_bare_umbrella_degree_query(query)
-            and not (_programme in UMBRELLA_DEGREES and query_names_subject(query))
+            and is_programme_specific_query(understanding_query)
+            and not is_bare_umbrella_degree_query(understanding_query)
+            and not (_programme in UMBRELLA_DEGREES and query_names_subject(understanding_query))
         ):
             return programme_not_found_response(
                 _programme,
@@ -885,31 +918,7 @@ def _ask_internal(
 
     _log_pipeline("llm_call", "LLM response received", answer_length=len(answer or ""))
 
-    citations = []
-    if answer:
-        match = re.search(r"Citations:\s*\[([^\]]+)\]", answer, re.IGNORECASE)
-        if match:
-            citations_str = match.group(1)
-            try:
-                citations = [int(num) for num in re.findall(r"\d+", citations_str)]
-            except Exception:
-                citations = []
-            answer = re.sub(r"\n*Citations:\s*\[[^\]]+\]", "", answer, flags=re.IGNORECASE)
-        else:
-            c_ids = re.findall(r"\[(?:Source\s+)?(\d+)\]", answer, re.IGNORECASE)
-            if c_ids:
-                citations = list(set(int(num) for num in c_ids))
-        
-        # Clean up any residual inline citations in answer
-        answer = re.sub(r"\[Source\s+\d+\]", "", answer, flags=re.IGNORECASE)
-        answer = re.sub(r"\[\d+\]", "", answer)
-        answer = re.sub(r"\(\s*Source\s+\d+\s*\)", "", answer, flags=re.IGNORECASE)
-
-    if citations:
-        sources = [s for s in sources if s.get("id") in citations]
-        # Re-index sources to be sequential
-        for new_id, s in enumerate(sources, start=1):
-            s["id"] = new_id
+    answer, sources = resolve_answer_citations(answer, sources)
 
     answer = postprocess_answer(answer)
     # Backstop: if the model still rendered a structurally-broken table (placeholder

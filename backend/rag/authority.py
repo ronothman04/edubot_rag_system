@@ -164,7 +164,8 @@ _ACADEMIC_RULES_TERMS = (
     "examination", "exam rules", "scholarship", "library", "computer lab",
     "student welfare", "committee", "regulation", "regulations", "policy",
     "policies", "vision", "mission", "ragging", "leave rules", "promotion rules",
-    "grievance", "id card", "uniform",
+    "grievance", "id card", "uniform", "facility", "facilities", "amenity",
+    "amenities", "campus infrastructure",
 )
 
 _HOSTEL_BOYS_TERMS = ("boys hostel", "boys' hostel", "mens hostel", "men's hostel")
@@ -215,7 +216,15 @@ def query_authority_intent(query: str) -> dict[str, Any]:
         admission_category = str(classify_admission_query(query).get("category") or "")
     except Exception:
         admission_category = ""
-    if admission_category in _ADMISSION_CATEGORIES:
+    # A request for syllabus/curriculum/papers is academic content, not a request
+    # for the admissions catalogue.  Treating every ``courses`` classification
+    # as admission caused the Prospectus to be prepended ahead of a dedicated
+    # syllabus even when that syllabus had already been retrieved correctly.
+    curriculum_request = bool(re.search(
+        r"\b(syllabus|syllabi|curriculum|curricula|papers?|modules?)\b",
+        q,
+    )) or ("semester" in q and bool(re.search(r"\bsubjects?\b", q)))
+    if admission_category in _ADMISSION_CATEGORIES and not curriculum_request:
         categories.add(CAT_ADMISSION)
     if admission_category == "hostel_admission":
         categories.add(CAT_HOSTEL)

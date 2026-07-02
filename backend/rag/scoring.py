@@ -395,6 +395,7 @@ def role_evidence_score(query: str, document: str) -> float:
     """Assess if the document holds details of requested role holders."""
     q = normalize_text(query)
     d = normalize_text(document)
+    raw = str(document or "")[:12000]
     if not d:
         return 0.0
 
@@ -418,13 +419,13 @@ def role_evidence_score(query: str, document: str) -> float:
         score += 300.0
     if "no" in d and "name" in d and "designation" in d:
         score += 180.0
-    if re.search(r"\|\s*\d+\s*\|[^|]{3,80}\|[^|]*(?:principal|chairman|coordinator|secretary|warden|head|director)", document, flags=re.IGNORECASE):
+    if re.search(r"\|\s*\d+\s*\|[^|]{3,80}\|[^|]*(?:principal|chairman|coordinator|secretary|warden|head|director)", raw, flags=re.IGNORECASE):
         score += 450.0
-    if re.search(r"\b\d+\s+[A-Z][A-Za-z.' -]+(?:\s+[A-Z][A-Za-z.' -]+){1,5}\s+(?:Principal|Vice Principal|Chairman|Coordinator|Secretary|Warden|Superintendent|Director|Head)\b", document):
+    if re.search(r"\b\d+\s+[A-Z][A-Za-z.' -]+(?:\s+[A-Z][A-Za-z.' -]+){1,5}\s+(?:Principal|Vice Principal|Chairman|Coordinator|Secretary|Warden|Superintendent|Director|Head)\b", raw):
         score += 450.0
     role_regex = _role_regex(role) if role else r"(?:principal|vice\s+principal|hod|head|chairman|chairperson|coordinator|secretary|warden|superintendent|director)"
     person_name = r"(?:Dr\.?|Br\.?|Sr\.?|Fr\.?|Mr\.?|Mrs\.?|Ms\.?|Prof\.?)?[ \t]*[A-Z][A-Za-z.'-]+(?:[ \t]+[A-Z][A-Za-z.'-]+){1,6}"
-    if re.search(rf"{person_name}.{{0,90}}{role_regex}|{role_regex}.{{0,90}}{person_name}", document, flags=re.IGNORECASE | re.DOTALL):
+    if re.search(rf"{person_name}.{{0,90}}{role_regex}|{role_regex}.{{0,90}}{person_name}", raw, flags=re.IGNORECASE | re.DOTALL):
         score += 380.0
     target = role_case.get("target") or extract_topic_from_query(query)
     if target and normalize_text(str(target)) in d:
@@ -433,7 +434,7 @@ def role_evidence_score(query: str, document: str) -> float:
         score -= 700.0
     if "principal" in q and "principal chairman" in d:
         score += 250.0
-    score += current_role_evidence_score(query, document)
+    score += current_role_evidence_score(query, raw)
     return score
 
 

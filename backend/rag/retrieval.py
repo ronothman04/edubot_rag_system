@@ -7,6 +7,7 @@ Imports config.py, intent.py, text_utils.py, filters.py, scoring.py, query_expan
 and external db.py, embeddings.py, and reranker.py.
 """
 
+import hashlib
 import logging
 import re
 from typing import Any
@@ -71,6 +72,7 @@ from .text_utils import (
     normalize_query,
     clean_text,
     content_without_context_header,
+    rerank_text,
 )
 from .filters import metadata_allows_query, candidate_dedupe_key
 from .scoring import (
@@ -99,7 +101,78 @@ from .scoring import (
     is_website_links_query,
     is_toc_candidate,
 )
-from .query_expansion import expand_query
+from .query_expansion import expand_query, extract_query_constraints
+
+
+def _is_curriculum_request(query: str) -> bool:
+    q = normalize_query(query)
+    return bool(re.search(
+        r"\b(syllabus|syllabi|curriculum|curricula|papers?|modules?)\b",
+        q,
+    )) or ("semester" in q and bool(re.search(r"\bsubjects?\b", q)))
+
+
+def _curriculum_evidence_matches(query: str, doc: str, meta: dict | None) -> bool:
+    """Require actual curriculum structure plus the user's hard constraints."""
+    if not _is_curriculum_request(query):
+        return True
+
+    constraints = extract_query_constraints(query)
+    meta = meta or {}
+    hay = normalize_text(rerank_text(doc, meta))
+    if not any(marker in hay for marker in (
+        "syllabus", "curriculum", "course code", "course structure",
+        "structure of the syllabus", "name of course", "title of the course",
+    )):
+        return False
+
+    programme = constraints.get("programme")
+    if programme:
+        from .intent import PROGRAMME_SYNONYMS
+
+        filename_scope = normalize_text(
+            f"{meta.get('filename', '')} {meta.get('section_title', '')} "
+            f"{meta.get('programme', '')}"
+        )
+        synonyms = PROGRAMME_SYNONYMS.get(str(programme), [str(programme).lower()])
+        full_forms = [normalize_text(s) for s in synonyms if len(s.split()) > 1]
+        code = normalize_text(str(programme))
+        programme_match = (
+            any(form in hay for form in full_forms)
+            or bool(re.search(rf"\b{re.escape(code)}\b", filename_scope))
+            or bool(re.search(rf"\b{re.escape(code)}\b", hay[:1200]))
+        )
+        if not programme_match:
+            return False
+
+    department = normalize_text(str(constraints.get("department") or ""))
+    if department:
+        department_scope = normalize_text(
+            f"{meta.get('department', '')} {meta.get('filename', '')} "
+            f"{meta.get('section_title', '')} {hay[:1200]}"
+        )
+        if not re.search(rf"\b{re.escape(department)}\b", department_scope):
+            return False
+
+    semester = constraints.get("semester")
+    if semester:
+        number_roman = {
+            "first": ("1", "i"), "second": ("2", "ii"),
+            "third": ("3", "iii"), "fourth": ("4", "iv"),
+            "fifth": ("5", "v"), "sixth": ("6", "vi"),
+            "seventh": ("7", "vii"), "eighth": ("8", "viii"),
+        }
+        number, roman = number_roman[str(semester)]
+        suffix = {"1": "st", "2": "nd", "3": "rd"}.get(number, "th")
+        semester_match = re.search(
+            rf"\b(?:{semester}\s+semester|semester\s+{number}|{number}{suffix}\s+semester|"
+            rf"semester\s+{roman}|{number}{suffix}\s+sem)\b",
+            hay,
+        )
+        if not semester_match:
+            return False
+
+    return True
 from .answer_builders import context_has_likely_person_name_for_title
 from .context import build_context
 from .freshness import freshness_rank_items, drop_superseded_duplicates
@@ -1007,6 +1080,157 @@ def apply_program_faculty_authority(
     return out_docs[:top_k], out_metas[:top_k], out_dists[:top_k]
 
 
+def _extract_exact_codes(query: str) -> list[str]:
+    raw = re.findall(r"\b[A-Za-z]{2,}(?:[- ]?[A-Za-z]{1,4})?[- ]?\d{2,4}(?:\.\d+)?\b", str(query or ""))
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for code in raw:
+        canonical = re.sub(r"[^a-z0-9]+", "", code.lower())
+        if not canonical or canonical in seen:
+            continue
+        seen.add(canonical)
+        deduped.append(canonical)
+    return deduped
+
+
+def apply_exact_code_authority(
+    query: str,
+    final_docs: list[str],
+    final_metas: list[dict],
+    final_dists: list[float | None],
+    where_filter: dict | None,
+    use_personal_docs: bool,
+    top_k: int,
+) -> tuple[list[str], list[dict], list[float | None]]:
+    """Prepend direct exact-code matches for literal course-code queries."""
+    codes = _extract_exact_codes(query)
+    if not codes:
+        return final_docs, final_metas, final_dists
+
+    try:
+        from .bm25_index import get_all_documents_and_metas, load_bm25_index
+        from .bm25_index import _bm25_model
+
+        if _bm25_model is None:
+            load_bm25_index()
+        all_docs, all_metas = get_all_documents_and_metas()
+    except Exception:
+        return final_docs, final_metas, final_dists
+
+    matches: list[tuple[str, dict, float | None]] = []
+    seen: set[str] = set()
+    for doc, meta in zip(all_docs or [], all_metas or []):
+        meta = meta or {}
+        if not metadata_allows_query(meta, use_personal_docs=use_personal_docs):
+            continue
+        if not metadata_matches_where_filter(meta, where_filter):
+            continue
+        haystack = re.sub(
+            r"[^a-z0-9]+", "",
+            normalize_text(
+                f"{meta.get('section_title', '')} {meta.get('filename', '')} {content_without_context_header(doc)}"
+            ),
+        )
+        if not any(code in haystack for code in codes):
+            continue
+        key = candidate_dedupe_key(doc, meta)
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append((doc, meta, None))
+
+    if not matches:
+        return final_docs, final_metas, final_dists
+
+    out_docs = [doc for doc, _meta, _dist in matches[:3]]
+    out_metas = [meta for _doc, meta, _dist in matches[:3]]
+    out_dists = [dist for _doc, _meta, dist in matches[:3]]
+    seen_keys = {candidate_dedupe_key(doc, meta) for doc, meta in zip(out_docs, out_metas)}
+    for doc, meta, dist in zip(final_docs, final_metas, final_dists):
+        key = candidate_dedupe_key(doc, meta)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        out_docs.append(doc)
+        out_metas.append(meta)
+        out_dists.append(dist)
+    return out_docs[:top_k], out_metas[:top_k], out_dists[:top_k]
+
+
+def apply_department_roster_authority(
+    query: str,
+    final_docs: list[str],
+    final_metas: list[dict],
+    final_dists: list[float | None],
+    where_filter: dict | None,
+    use_personal_docs: bool,
+    top_k: int,
+) -> tuple[list[str], list[dict], list[float | None]]:
+    """Prepend authoritative department roster/head chunks for staff queries."""
+    if not (is_staff_query(query) or is_head_query(query)):
+        return final_docs, final_metas, final_dists
+
+    dept = extract_staff_department_from_query(query) or extract_department_from_query(query)
+    wants_multi_department_heads = is_list_query(query) and "departments" in normalize_query(query) and (
+        "heads" in normalize_query(query) or "hod" in normalize_query(query)
+    )
+
+    try:
+        from .bm25_index import get_all_documents_and_metas, load_bm25_index
+        from .bm25_index import _bm25_model
+
+        if _bm25_model is None:
+            load_bm25_index()
+        all_docs, all_metas = get_all_documents_and_metas()
+    except Exception:
+        return final_docs, final_metas, final_dists
+
+    dept_aliases = _dept_aliases(dept) if dept else []
+    matches: list[tuple[str, dict, float | None]] = []
+    seen: set[str] = set()
+    for doc, meta in zip(all_docs or [], all_metas or []):
+        meta = meta or {}
+        if not metadata_allows_query(meta, use_personal_docs=use_personal_docs):
+            continue
+        if not metadata_matches_where_filter(meta, where_filter):
+            continue
+        combined = normalize_text(
+            f"{meta.get('filename', '')} {meta.get('section_title', '')} {content_without_context_header(doc)}"
+        )
+        if wants_multi_department_heads:
+            if combined.count("department of") < 2 or "head :" not in combined:
+                continue
+        else:
+            if not dept_aliases or not any(alias in combined for alias in dept_aliases):
+                continue
+            if "head :" not in combined and "head (ug)" not in combined and "director (pg)" not in combined:
+                continue
+            if is_list_query(query) and "teaching staff" not in combined:
+                continue
+        key = candidate_dedupe_key(doc, meta)
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append((doc, meta, None))
+
+    if not matches:
+        return final_docs, final_metas, final_dists
+
+    out_docs = [doc for doc, _meta, _dist in matches[:4]]
+    out_metas = [meta for _doc, meta, _dist in matches[:4]]
+    out_dists = [dist for _doc, _meta, dist in matches[:4]]
+    seen_keys = {candidate_dedupe_key(doc, meta) for doc, meta in zip(out_docs, out_metas)}
+    for doc, meta, dist in zip(final_docs, final_metas, final_dists):
+        key = candidate_dedupe_key(doc, meta)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        out_docs.append(doc)
+        out_metas.append(meta)
+        out_dists.append(dist)
+    return out_docs[:top_k], out_metas[:top_k], out_dists[:top_k]
+
+
 def _chunk_sort_key(meta: dict | None) -> tuple[str, int, int]:
     meta = meta or {}
     try:
@@ -1266,7 +1490,16 @@ def retrieve_chunks(
     # department/year/document_type-filtered query can never be served another
     # scope's cached chunks (default official+unfiltered → stable shared label).
     scope_label = retrieval_scope_label(where_filter, use_personal_docs)
-    intent_label = f"topk_{top_k}_model_{EMBEDDING_MODEL}_scope_{scope_label}"
+    # The same expanded BM25 query can be paired with different focused semantic
+    # queries. Include the semantic representation in the cache identity so a
+    # cached result can never bypass updated entity/semester/follow-up handling.
+    semantic_signature = hashlib.sha256(
+        normalize_query(expanded_q).encode("utf-8")
+    ).hexdigest()[:16]
+    intent_label = (
+        f"topk_{top_k}_model_{EMBEDDING_MODEL}_scope_{scope_label}"
+        f"_semantic_{semantic_signature}"
+    )
 
     cached_results = get_cached_retrieval(query, intent_label)
     if cached_results is not None:
@@ -1626,6 +1859,28 @@ def retrieve_chunks(
         final_metas = [item[1] for item in ordered]
         final_dists = [item[2] for item in ordered]
 
+    # Constraint-aware precision gate for curriculum requests.  Run after
+    # related-chunk expansion/reranking so a correct neighbouring syllabus chunk
+    # can enter the set, but before freshness/authority/truncation.  Unlike a
+    # metadata filter this checks the actual evidence and therefore works with
+    # older chunks whose programme/semester metadata is incomplete.
+    if _is_curriculum_request(orig_q):
+        constrained = [
+            (doc, meta, dist)
+            for doc, meta, dist in zip(final_docs, final_metas, final_dists)
+            if _curriculum_evidence_matches(orig_q, doc, meta)
+        ]
+        if constrained:
+            final_docs = [item[0] for item in constrained]
+            final_metas = [item[1] for item in constrained]
+            final_dists = [item[2] for item in constrained]
+        else:
+            # A curriculum query with explicit constraints but no matching
+            # curriculum evidence must not fall through to profiles/admissions.
+            constraints = extract_query_constraints(orig_q)
+            if any(constraints.get(key) for key in ("programme", "department", "semester")):
+                final_docs, final_metas, final_dists = [], [], []
+
     try:
         items = list(zip(final_docs, final_metas, final_dists))
         ranked_items = freshness_rank_items(query, items)
@@ -1725,6 +1980,19 @@ def retrieve_chunks(
     except Exception as e:
         debug_rag("apply_knowledge_hierarchy failed; falling back to existing order", e)
 
+    try:
+        final_docs, final_metas, final_dists = apply_department_roster_authority(
+            query=orig_q,
+            final_docs=final_docs,
+            final_metas=final_metas,
+            final_dists=final_dists,
+            where_filter=where_filter,
+            use_personal_docs=use_personal_docs,
+            top_k=max(target_top_k, len(final_docs)),
+        )
+    except Exception as e:
+        debug_rag("apply_department_roster_authority failed; falling back to existing order", e)
+
     # PROGRAMME FACULTY: a "who are the faculty of <programme>" question must be
     # answered from the dedicated programme roster (e.g. FP.pdf for MCA), not a
     # department-wide staff list. Wrapped so any failure degrades to the existing
@@ -1741,6 +2009,19 @@ def retrieve_chunks(
         )
     except Exception as e:
         debug_rag("apply_program_faculty_authority failed; falling back to existing order", e)
+
+    try:
+        final_docs, final_metas, final_dists = apply_exact_code_authority(
+            query=orig_q,
+            final_docs=final_docs,
+            final_metas=final_metas,
+            final_dists=final_dists,
+            where_filter=where_filter,
+            use_personal_docs=use_personal_docs,
+            top_k=max(target_top_k, len(final_docs)),
+        )
+    except Exception as e:
+        debug_rag("apply_exact_code_authority failed; falling back to existing order", e)
 
     if len(final_docs) > target_top_k:
         final_docs  = final_docs[:target_top_k]
@@ -1887,8 +2168,22 @@ def filter_staff_docs(
             continue
         if not chunk_has_staff_evidence(doc):
             continue
+        if is_list_query(query):
+            roster_text = normalize_text(
+                f"{(meta or {}).get('section_title', '')} {doc}"
+            )
+            has_roster = (
+                bool(re.search(r"(?<!non )\bteaching staff\b", roster_text))
+                or "faculty members" in roster_text
+                or "department faculty" in roster_text
+                or ("name" in roster_text and "designation" in roster_text)
+            )
+            if not has_roster:
+                continue
         if dept_aliases:
-            doc_l = normalize_query(doc)
+            doc_l = normalize_text(
+                f"{(meta or {}).get('filename', '')} {(meta or {}).get('section_title', '')} {doc}"
+            )
             if not any(alias in doc_l for alias in dept_aliases):
                 continue
         filtered_docs.append(doc)

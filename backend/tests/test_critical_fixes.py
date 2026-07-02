@@ -223,20 +223,20 @@ def test_fix7_followup_word_boundaries():
 
 
 def test_fix8_followup_topic_resolution():
-    print("\n=== Fix 8: follow-up topic resolution via LLM query rewriting ===")
+    print("\n=== Fix 8: deterministic follow-up topic resolution ===")
     from rag.query_expansion import build_smart_query
     from unittest.mock import patch
 
     query = "who is the head of department"
     history = "User: tell me about the Department of commerce\nAssistant: The Commerce department was established in 1948."
 
-    with patch("llm.generate", return_value="who is the head of the Commerce department") as mock_gen:
+    with patch("llm.generate") as mock_gen:
         retrieval_query, latest, used_history = build_smart_query(query, history)
-        
-        check("retrieval query incorporates department context", "Commerce" in retrieval_query)
-        check("retrieval query is rewritten correctly", retrieval_query == "who is the head of the Commerce department")
+
+        check("retrieval query incorporates department context", "commerce" in retrieval_query.lower())
+        check("role request is preserved", "head of department" in retrieval_query)
         check("used_history is flagged as True", used_history is True)
-        check("mock_gen was called", mock_gen.called)
+        check("LLM is not needed for structured follow-up", not mock_gen.called)
 
 
 if __name__ == "__main__":

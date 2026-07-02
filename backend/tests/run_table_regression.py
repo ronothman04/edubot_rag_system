@@ -34,8 +34,8 @@ import sys
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from rag.text_utils import normalize_query, distill_embedding_query
-from rag.query_expansion import build_smart_retrieval_query
+from rag.text_utils import normalize_query
+from rag.query_expansion import build_focused_retrieval_query, build_smart_retrieval_query
 from rag.retrieval import retrieve_chunks
 from rag.context import build_context
 from rag.table_integrity import context_has_unreliable_table
@@ -74,7 +74,7 @@ def run(with_llm: bool = False):
     for q in answerable:
         smart = build_smart_retrieval_query(q["question"])
         kw_q = normalize_query(smart)
-        emb_q = normalize_query(distill_embedding_query(q["question"]))
+        emb_q = build_focused_retrieval_query(q["question"])
         docs, metas, dists = retrieve_chunks(
             query=kw_q, top_k=TOP_K, where_filter=None,
             embedding_query=emb_q, original_query=q["question"],
@@ -107,7 +107,7 @@ def run(with_llm: bool = False):
         smart = build_smart_retrieval_query(q["question"])
         docs, metas, dists = retrieve_chunks(
             query=normalize_query(smart), top_k=TOP_K, where_filter=None,
-            embedding_query=normalize_query(distill_embedding_query(q["question"])),
+            embedding_query=build_focused_retrieval_query(q["question"]),
             original_query=q["question"],
         )
         # We cannot assert a gold "no source"; we just record how many chunks pass

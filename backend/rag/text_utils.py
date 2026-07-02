@@ -72,6 +72,105 @@ ABBREVIATION_MAP = {
 }
 
 
+# Small, domain-level vocabulary used for conservative typo repair in user
+# queries.  This is deliberately not a dictionary of departments/programmes or
+# document titles: those entities must remain data-driven and must never be
+# silently rewritten.  A token is repaired only when it is close to exactly one
+# stable intent word, which covers ordinary keyboard/OCR mistakes while leaving
+# names, codes, and unfamiliar entities untouched.
+_QUERY_INTENT_VOCABULARY = frozenset({
+    "accommodation", "admission", "attendance", "charges", "college",
+    "committee", "contact", "course", "courses", "curriculum", "degree",
+    "department", "documents", "education", "eligibility", "examination", "facilities",
+    "faculty", "fees", "hostel", "modules", "papers", "policies", "policy",
+    "principal", "programme", "programmes", "ragging", "registration",
+    "requirements", "scholarship", "scholarships", "semester", "structure",
+    "subject", "subjects", "syllabus", "teacher", "teachers",
+})
+
+
+def _edit_distance(left: str, right: str) -> int:
+    """Return Levenshtein distance for two short query tokens."""
+    if left == right:
+        return 0
+    if not left:
+        return len(right)
+    if not right:
+        return len(left)
+    previous = list(range(len(right) + 1))
+    for row, lch in enumerate(left, start=1):
+        current = [row]
+        for col, rch in enumerate(right, start=1):
+            current.append(min(
+                current[-1] + 1,
+                previous[col] + 1,
+                previous[col - 1] + (lch != rch),
+            ))
+        previous = current
+    return previous[-1]
+
+
+@lru_cache(maxsize=2048)
+def _repair_query_token(token: str) -> str:
+    """Repair an unambiguous minor typo; otherwise return the token unchanged."""
+    if (
+        len(token) < 5
+        or token in _QUERY_INTENT_VOCABULARY
+        or any(ch.isdigit() for ch in token)
+    ):
+        return token
+
+    limit = 1 if len(token) <= 7 else 2
+    matches = [
+        candidate
+        for candidate in _QUERY_INTENT_VOCABULARY
+        if abs(len(candidate) - len(token)) <= limit
+        and _edit_distance(token, candidate) <= limit
+    ]
+    return matches[0] if len(matches) == 1 else token
+
+
+def correct_query_spelling(query: str) -> str:
+    """Conservatively correct minor mistakes in stable college-intent words."""
+    return re.sub(
+        r"\b[a-zA-Z]+\b",
+        lambda match: _repair_query_token(match.group(0).lower()),
+        str(query or ""),
+    )
+
+
+_SEMESTER_FORMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("first", ("1", "1st", "one", "first", "i")),
+    ("second", ("2", "2nd", "two", "second", "ii")),
+    ("third", ("3", "3rd", "three", "third", "iii")),
+    ("fourth", ("4", "4th", "four", "fourth", "iv")),
+    ("fifth", ("5", "5th", "five", "fifth", "v")),
+    ("sixth", ("6", "6th", "six", "sixth", "vi")),
+    ("seventh", ("7", "7th", "seven", "seventh", "vii")),
+    ("eighth", ("8", "8th", "eight", "eighth", "viii")),
+)
+
+
+def normalize_semester_expression(query: str) -> str:
+    """Canonicalize common semester forms without dropping the constraint."""
+    text = str(query or "")
+    for canonical, forms in _SEMESTER_FORMS:
+        alternatives = "|".join(sorted(map(re.escape, forms), key=len, reverse=True))
+        text = re.sub(
+            rf"\b(?:semester|sem)\s*[-.:]?\s*(?:{alternatives})\b",
+            f"{canonical} semester",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            rf"\b(?:{alternatives})\s*[-.:]?\s*(?:semester|sem)\b",
+            f"{canonical} semester",
+            text,
+            flags=re.IGNORECASE,
+        )
+    return text
+
+
 @lru_cache(maxsize=512)
 def normalize_query(query: str) -> str:
     """Normalize user search queries, expanding common abbreviations.
@@ -86,7 +185,8 @@ def normalize_query(query: str) -> str:
     is what exact code/acronym queries depend on (see project requirement: prefer
     exact acronym/code/title matches when available).
     """
-    query = str(query or "")
+    query = correct_query_spelling(str(query or ""))
+    query = normalize_semester_expression(query)
     query = query.replace("'", "'").replace("\u201c", '"').replace("\u201d", '"')
 
     appended_expansions: list[str] = []

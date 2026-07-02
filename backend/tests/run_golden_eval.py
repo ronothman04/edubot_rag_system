@@ -63,12 +63,16 @@ def build_where_filter(query: str):
 
 def retrieve_for_eval(query: str, k: int):
     """Run the same query transforms main.py uses, then retrieve_chunks."""
-    from rag.query_expansion import build_smart_query, build_smart_retrieval_query
-    from rag.text_utils import distill_embedding_query, normalize_query
+    from rag.query_expansion import (
+        build_focused_retrieval_query,
+        build_smart_query,
+        build_smart_retrieval_query,
+    )
+    from rag.text_utils import normalize_query
     from rag.retrieval import retrieve_chunks
 
     rq_raw, _latest, _used = build_smart_query(query, "")
-    emb = normalize_query(distill_embedding_query(rq_raw))
+    emb = build_focused_retrieval_query(rq_raw)
     rq = normalize_query(build_smart_retrieval_query(rq_raw))
     return retrieve_chunks(
         query=rq, top_k=k, where_filter=build_where_filter(query),
