@@ -241,6 +241,50 @@ def contact_marker_score(document: str) -> float:
     return score
 
 
+def contact_query_relevance_score(query: str, document: str, meta: dict | None = None) -> float:
+    """Query-aware ranking for college contact and location questions."""
+    meta = meta or {}
+    q = normalize_text(query)
+    d_norm = normalize_text(document)
+    section = normalize_text(str(meta.get("section_title", "")))
+    filename = normalize_text(str(meta.get("filename", "")))
+
+    score = contact_marker_score(document)
+
+    asks_location = any(term in q for term in ["where", "located", "location", "address"])
+    asks_phone_email = any(term in q for term in ["phone", "telephone", "mobile", "email", "mail", "fax", "contact number"])
+
+    if asks_location:
+        weighted_location_markers = {
+            "bomfyle road": 2200.0,
+            "name and address of the college": 1800.0,
+            "address including": 1600.0,
+            "east khasi hills": 1200.0,
+            "shillong 793 001": 700.0,
+            "shillong 793001": 700.0,
+            "meghalaya india": 500.0,
+        }
+        for marker, weight in weighted_location_markers.items():
+            if marker in d_norm:
+                score += weight
+        if "address" in d_norm and "shillong" in d_norm:
+            score += 600.0
+        if "road" in d_norm and "shillong" in d_norm:
+            score += 500.0
+        if "committee" in section or "cell" in section:
+            score -= 800.0
+        if "member" in d_norm and "address" not in d_norm and "bomfyle road" not in d_norm:
+            score -= 400.0
+
+    if asks_phone_email and ("committee" in section or "cell" in section):
+        score -= 300.0
+
+    if any(marker in filename for marker in ["mandatorydisclosure", "handbook", "prospectus", "admissionpolicy"]):
+        score += 250.0
+
+    return score
+
+
 def is_table_of_contents_chunk(document: str) -> bool:
     """Assess if a chunk looks like a table of contents page."""
     d_norm = normalize_text(document)
@@ -886,7 +930,7 @@ def score_chunk_by_intent(query: str, document: str, meta: dict | None = None) -
         
     # 3. Contact Intent
     if is_contact_query(query):
-        score += contact_marker_score(document)
+        score += contact_query_relevance_score(query, document, meta)
         
     # 4. Fee Intent
     if is_fee_query(query) or is_application_fee_query(query) or is_fee_table_query(query):

@@ -24,10 +24,11 @@ CLARIFICATION_MESSAGE = (
 )
 
 OUT_OF_SCOPE_MESSAGE = (
-    "I'm here to help specifically with information about St. Anthony's College. "
-    "I'd be happy to assist with questions on admissions, courses, fees, documents, "
-    "hostel, attendance, examination rules, clubs, departments, faculty, or how to "
-    "contact the college."
+    "I'm EduBot, and I answer questions using the available college resources. "
+    "I can help with admissions, programmes, eligibility, fees, departments, "
+    "facilities, examinations, and other college-related information. "
+    "I'm unable to assist with requests outside the scope of the available "
+    "college resources."
 )
 
 HOMEWORK_REFUSAL_MESSAGE = (

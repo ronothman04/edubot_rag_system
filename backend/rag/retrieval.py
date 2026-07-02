@@ -93,6 +93,7 @@ from .scoring import (
     document_evidence_score,
     hostel_evidence_score,
     contact_marker_score,
+    contact_query_relevance_score,
     hostel_relevance_score,
     procedural_relevance_score, # This line is already present in the original file.
     person_lookup_relevance_score,
@@ -1778,11 +1779,14 @@ def retrieve_chunks(
         contact_filtered = [
             (doc, meta, dist)
             for doc, meta, dist in zip(final_docs, final_metas, final_dists)
-            if contact_marker_score(doc) > 0
+            if contact_query_relevance_score(query, doc, meta) > 0
         ]
-        contact_filtered.sort(key=lambda item: contact_marker_score(item[0]), reverse=True)
+        contact_filtered.sort(
+            key=lambda item: contact_query_relevance_score(query, item[0], item[1]),
+            reverse=True,
+        )
         if len(contact_filtered) >= min(target_top_k, max(2, len(final_docs) // 2)):
-            if contact_marker_score(contact_filtered[0][0]) >= 1500:
+            if contact_query_relevance_score(query, contact_filtered[0][0], contact_filtered[0][1]) >= 1500:
                 contact_filtered = contact_filtered[:1]
             final_docs  = [item[0] for item in contact_filtered]
             final_metas = [item[1] for item in contact_filtered]
