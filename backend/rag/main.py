@@ -54,7 +54,7 @@ from .config import (
     MAX_DISTANCE,
 )
 from .schemas import make_response
-from .text_utils import normalize_query, postprocess_answer
+from .text_utils import normalize_query, normalize_text, postprocess_answer
 from .prompts import LLM_SYSTEM
 from .intent import (
     is_homework_or_assignment,
@@ -116,6 +116,7 @@ from .response_format import classify_response_format, build_format_instruction
 from .scoring import is_context_relevant_for_hostel
 from .answer_builders import (
     build_current_principal_answer,
+    current_principal_source,
     context_has_likely_person_name_for_title,
     invalid_person_lookup_answer,
     append_supporting_action_details,
@@ -713,14 +714,28 @@ def _ask_internal(
     ):
         target_to_check = entities["course"] or entities["department"]
         if target_to_check:
-            t_lower = normalize_query(target_to_check)
+            # Surface forms to look for in a chunk. normalize_query FUSES synonyms
+            # into a single multi-word string ("MA" -> "ma master of arts") that
+            # never appears verbatim in a document, which made every specific
+            # course eligibility query ("MA Education") wrongly fall through to
+            # not-found. Match the un-expanded course token AND its
+            # subject/department discriminator on whole-word boundaries instead.
+            grounding_variants = {
+                normalize_text(target_to_check),
+                normalize_text(entities.get("course") or ""),
+                normalize_text(entities.get("department") or ""),
+            }
+            grounding_variants = {v for v in grounding_variants if v}
             has_grounding = False
             eligibility_keywords = ["eligibility criteria", "qualifying examination", "subject combination", "required subject", "minimum qualification", "admission criteria"]
-            
+
             for doc in docs:
-                d_l = normalize_query(doc)
-                if t_lower in d_l:
-                    # If they asked for eligibility, we need eligibility keywords. 
+                d_l = normalize_text(doc)
+                mentions_target = any(
+                    re.search(rf"\b{re.escape(v)}\b", d_l) for v in grounding_variants
+                )
+                if mentions_target:
+                    # If they asked for eligibility, we need eligibility keywords.
                     # If they just asked for course info, the course name is enough.
                     if "eligibility" not in all_intents or any(kw in d_l for kw in eligibility_keywords):
                         has_grounding = True
@@ -781,9 +796,12 @@ def _ask_internal(
 
     current_principal_answer = build_current_principal_answer(query, context)
     if current_principal_answer:
+        # Cite the tenure evidence that actually proves who is current, not the
+        # stale committee tables that dominate retrieval for this query.
+        evidence_source = current_principal_source()
         return make_response(
             current_principal_answer,
-            sources=sources,
+            sources=[evidence_source] if evidence_source else sources,
             response_type="rag",
             retrieval_query=retrieval_query,
             used_history=used_history,

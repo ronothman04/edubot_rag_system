@@ -152,6 +152,45 @@ def test_curriculum_evidence_gate_rejects_profile_keyword_collision():
     )
 
 
+def test_current_principal_resolves_to_most_recent_tenure_not_stale_majority():
+    """The current principal is elected by tenure ordinal ("Nth Principal"), so a
+    former principal named across many stale documents can never win the vote."""
+    from rag.answer_builders import resolve_current_principal, build_current_principal_answer
+
+    name = resolve_current_principal()
+    if name is None:
+        # No tenure evidence in the corpus (e.g. empty index) -> nothing to assert.
+        return
+    lowered = name.lower()
+    # The former (8th) principal must not be returned for a current-principal query.
+    assert "longley" not in lowered and "albert" not in lowered
+
+    for query in ("Who is the current principal?", "Who is the principal of the college?"):
+        answer = build_current_principal_answer(query, "")
+        assert answer and name in answer
+        assert "longley" not in answer.lower()
+
+    # A *vice* principal question must never be hijacked by the principal builder.
+    assert build_current_principal_answer("Who is the vice principal?", "") is None
+
+
+def test_course_token_grounding_uses_unexpanded_surface_form():
+    """The eligibility grounding gate must match un-expanded course tokens.
+
+    normalize_query fuses synonyms into one multi-word string ("MA" ->
+    "ma master of arts") that never appears verbatim in a document; grounding a
+    specific-course eligibility query against that fused string wrongly forced a
+    not-found. normalize_text must stay un-expanded so the gate can match."""
+    from rag.text_utils import normalize_text
+
+    assert normalize_query("MA") == "ma master of arts"
+    assert normalize_text("MA") == "ma"
+    assert normalize_text("MA Education") == "ma education"
+    # The subject discriminator (present verbatim in eligibility chunks) grounds it.
+    chunk = normalize_text("M.A. (Education). Please ensure from the eligibility criteria given")
+    assert "education" in chunk
+
+
 def test_citation_resolution_keeps_only_valid_cited_sources():
     sources = [
         {"id": 1, "file": "one.pdf", "page": 1},

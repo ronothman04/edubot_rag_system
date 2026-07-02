@@ -190,25 +190,206 @@ def invalid_person_lookup_answer(query: str, answer: str) -> bool:
     return not has_capitalized_name
 
 
-def build_current_principal_answer(query: str, context: str) -> str | None:
-    """Return a stable, citation-free answer when current principal evidence is explicit."""
-    q = normalize_text(query)
-    if "principal" not in q or not any(term in q for term in ("current", "present", "now")):
+# Person-name shapes used by the principal resolver. A "principal name" is a
+# religious/academic honorific followed by 1–4 capitalised words, optionally
+# trailed by an order suffix ("SDB") and/or degree (", PhD").
+_PRINCIPAL_TITLE = r"(?:Rev\.?\s*)?(?:Dr\.?\s*)?(?:Fr\.?|Br\.?|Sr\.?)"
+_PRINCIPAL_NAME = (
+    rf"{_PRINCIPAL_TITLE}\s+[A-Z][A-Za-z.'’-]+"
+    rf"(?:\s+[A-Z][A-Za-z.'’-]+){{0,3}}"
+)
+# "<Name> ... took over as the Nth Principal ...": the ordinal makes the
+# *current* holder unambiguous (9th supersedes 8th) regardless of how many
+# stale documents still list an earlier principal.
+_PRINCIPAL_TENURE_RE = re.compile(
+    rf"({_PRINCIPAL_NAME})\s+took\s+over\s+as\s+the\s+(\d+)(?:st|nd|rd|th)\s+Principal\b([^.]*)",
+    flags=re.IGNORECASE,
+)
+# "<Name>[ SDB][, PhD] Principal" signature/label form (used for full-name
+# resolution and as a context fallback). \s spans newlines so a governance
+# block like "Fr. Arcadius Puwein SDB, PhD\nPrincipal of ..." still matches.
+_PRINCIPAL_SIG_RE = re.compile(
+    rf"\b({_PRINCIPAL_NAME}(?:\s+SDB)?(?:,\s*PhD)?)\s+Principal\b",
+    flags=re.IGNORECASE,
+)
+# Honorifics/suffixes stripped when reducing a name to its identity tokens.
+_NAME_STOPWORDS = {"rev", "dr", "fr", "br", "sr", "sdb", "phd", "vice"}
+
+
+def _name_identity_tokens(name: str) -> set[str]:
+    """Lowercased personal-name tokens (honorifics/suffixes removed)."""
+    tokens = re.findall(r"[A-Za-z]+", name.lower())
+    return {t for t in tokens if t not in _NAME_STOPWORDS and len(t) > 1}
+
+
+def _iter_corpus_docs() -> list[tuple[str, dict]]:
+    """All non-deleted corpus documents (BM25 cache first, ChromaDB fallback)."""
+    try:
+        from .bm25_index import get_all_documents_and_metas, load_bm25_index
+        import rag.bm25_index as _bm
+
+        if _bm._bm25_model is None:
+            load_bm25_index()
+        docs, metas = get_all_documents_and_metas()
+        if docs:
+            return list(zip(docs, metas))
+    except Exception:
+        pass
+    try:
+        res = collection.get(include=["documents", "metadatas"], limit=8000)
+        return list(zip(res.get("documents", []), res.get("metadatas", [])))
+    except Exception:
+        return []
+
+
+def _fullest_principal_name(identity: set[str], docs: list[tuple[str, dict]]) -> str | None:
+    """Best (fullest) signature-form name matching an identity token set."""
+    best: str | None = None
+    for text, meta in docs:
+        if not metadata_allows_query(meta or {}):
+            continue
+        for match in _PRINCIPAL_SIG_RE.finditer(text or ""):
+            candidate = _clean_candidate_name(match.group(1))
+            cand_tokens = _name_identity_tokens(candidate)
+            if "vice" in candidate.lower() or not cand_tokens & identity:
+                continue
+            if best is None or (len(candidate.split()), len(candidate)) > (
+                len(best.split()),
+                len(best),
+            ):
+                best = candidate
+    return best
+
+
+def _source_from_evidence(meta: dict, text: str) -> dict:
+    """Build a UI source dict (build_context shape) from an evidence chunk."""
+    meta = meta or {}
+    filename = str(meta.get("filename") or meta.get("source") or "Document")
+    try:
+        from .authority import display_name_for
+
+        display = display_name_for(meta) or filename
+    except Exception:
+        display = filename
+    page = meta.get("page", "?")
+    return {
+        "id": 1,
+        "file": display,
+        "page": page,
+        "page_label": meta.get("page_label") or page,
+        "chunk_index": meta.get("chunk_index", 0),
+        "text": str(text or "")[:600],
+        "source_url": str(meta.get("source_url", "") or ""),
+        "found_on_url": str(meta.get("found_on_url", "") or ""),
+        "file_type": str(meta.get("file_type", "") or ""),
+        "source_type": str(meta.get("source_type", "") or ""),
+        "scope": meta.get("scope", "official"),
+        "department": meta.get("department", "general"),
+        "year": meta.get("year", "general"),
+        "document_type": meta.get("document_type", "general"),
+    }
+
+
+def _resolve_current_principal_detail() -> tuple[str, dict, str] | None:
+    """Resolve the current principal plus the tenure evidence that proves it.
+
+    Stale documents (handbooks, annual reports, committee tables) far outnumber
+    the notice of a new appointment, so a majority/similarity vote elects the
+    previous principal. Instead we anchor on explicit tenure evidence — the
+    "took over as the Nth Principal" ordinal — and pick the highest ordinal
+    (most recent tenure). Returns (full_name, evidence_meta, evidence_text), or
+    None when no tenure evidence exists (caller then falls back to context)."""
+    docs = _iter_corpus_docs()
+    if not docs:
         return None
 
-    title = r"(?:Rev\.\s*)?(?:Dr\.\s*)?(?:Fr\.?|Br\.?|Sr\.?)"
-    name_word = r"[A-Z][A-Za-z.'-]+"
-    pattern = re.compile(
-        rf"\b({title}\s+{name_word}(?:\s+{name_word}){{1,3}}"
-        rf"(?:\s+SDB)?(?:,\s*PhD)?)\s+Principal\b",
-        flags=re.IGNORECASE,
-    )
-    matches = [_clean_candidate_name(match.group(1)) for match in pattern.finditer(context or "")]
+    # name string -> (ordinal, latest year seen); + evidence (meta, text) per name.
+    tenures: dict[str, tuple[int, int]] = {}
+    evidence: dict[str, tuple[dict, str]] = {}
+    for text, meta in docs:
+        if not metadata_allows_query(meta or {}):
+            continue
+        for match in _PRINCIPAL_TENURE_RE.finditer(text or ""):
+            name = _clean_candidate_name(match.group(1))
+            try:
+                ordinal = int(match.group(2))
+            except (TypeError, ValueError):
+                continue
+            year_match = re.search(r"(?:19|20)\d{2}", match.group(3) or "")
+            year = int(year_match.group(0)) if year_match else 0
+            prev = tenures.get(name)
+            if prev is None or (ordinal, year) > prev:
+                tenures[name] = (ordinal, year)
+                evidence[name] = (meta or {}, text or "")
+
+    if not tenures:
+        return None
+
+    winner = max(tenures.items(), key=lambda item: item[1])[0]
+    identity = _name_identity_tokens(winner)
+    if not identity:
+        return None
+
+    full_name = _fullest_principal_name(identity, docs) or winner
+    ev_meta, ev_text = evidence[winner]
+    return full_name, ev_meta, ev_text
+
+
+def resolve_current_principal() -> str | None:
+    """Full name of the current principal, or None (see _resolve_current_principal_detail)."""
+    detail = _resolve_current_principal_detail()
+    return detail[0] if detail else None
+
+
+def current_principal_source() -> dict | None:
+    """Citation source for the current-principal fact (the tenure evidence doc)."""
+    detail = _resolve_current_principal_detail()
+    if not detail:
+        return None
+    _, meta, text = detail
+    return _source_from_evidence(meta, text)
+
+
+def _principal_name_from_context(context: str) -> str | None:
+    """Fallback: fullest '<Name> Principal' signature in the provided context,
+    excluding vice-principal matches."""
+    matches: list[str] = []
+    for match in _PRINCIPAL_SIG_RE.finditer(context or ""):
+        candidate = _clean_candidate_name(match.group(1))
+        if "vice" in candidate.lower():
+            continue
+        matches.append(candidate)
     if not matches:
         return None
+    return max(matches, key=lambda value: (len(value.split()), len(value)))
 
-    # Prefer the fullest supported form when the same person appears abbreviated.
-    name = max(matches, key=lambda value: (len(value.split()), len(value)))
+
+def build_current_principal_answer(query: str, context: str) -> str | None:
+    """Return a stable, citation-free answer for principal role/name lookups.
+
+    Fires for genuine principal questions ("who is the principal", "current
+    principal", "name of the principal") but never for *vice* principal. The
+    answer is resolved from corpus-wide tenure evidence first, so it stays
+    correct even when retrieval surfaces stale committee tables naming a former
+    principal."""
+    q = normalize_text(query)
+    if "principal" not in q or "vice principal" in q or "vice-principal" in q:
+        return None
+
+    wants_current = any(term in q for term in ("current", "present", "now"))
+    role = extract_role_query(query).get("role")
+    is_principal_lookup = role == "principal" and (
+        wants_current or "who" in q or is_person_lookup_query(query)
+    )
+    if not (is_principal_lookup or wants_current):
+        return None
+
+    # Corpus-wide tenure evidence is authoritative; fall back to whatever the
+    # retrieved context asserts only when no tenure statement exists.
+    name = resolve_current_principal() or _principal_name_from_context(context)
+    if not name:
+        return None
+
     return f"The present principal of St. Anthony's College is {name}."
 
 
