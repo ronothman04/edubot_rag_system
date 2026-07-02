@@ -1243,10 +1243,13 @@ def startup_event():
 
     # §7: BM25 index must be rebuilt on startup if ChromaDB collection has changed
     try:
-        from rag.bm25_index import load_bm25_index, rebuild_bm25_index, _bm25_docs
-        load_bm25_index()
+        # NOTE: do not `from rag.bm25_index import _bm25_docs` here — that binds
+        # the pre-load empty list, so the count reads 0 and every startup does a
+        # full (multi-minute) rebuild. Read the state through the accessor.
+        from rag.bm25_index import get_all_documents_and_metas, rebuild_bm25_index
+        bm25_docs, _ = get_all_documents_and_metas()
         chroma_count = collection.count()
-        bm25_count = len(_bm25_docs)
+        bm25_count = len(bm25_docs)
         if chroma_count != bm25_count:
             print(f"[EduBot Startup] BM25 index stale (BM25={bm25_count}, ChromaDB={chroma_count}). Rebuilding...")
             rebuild_bm25_index()

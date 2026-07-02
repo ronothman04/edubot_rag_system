@@ -660,23 +660,45 @@ def _is_college_history_query(query: str) -> bool:
         "origin of the college",
         "college founded",
         "college established",
+        "college was founded",
+        "college was established",
+        "college started",
+        "college start",
+        "college begin",
+        "how old is the college",
+        "founding of the college",
+        "establishment of the college",
     ))
 
 
+_COLLEGE_FOUNDING_RE = re.compile(
+    r"\b(college|institution)\b[^.\n]{0,120}\b(founded|established|started|began|history)\b"
+    r"|\b(founded|established|started|began)\b[^.\n]{0,120}\b(college|institution)\b"
+)
+
+
 def _has_college_history_evidence(doc: str, meta: dict | None) -> bool:
-    """Reject literal 'history' matches that contain no college-history evidence."""
+    """Reject literal 'history' matches that contain no college-history evidence.
+
+    Every crawled page's title carries the site-wide "St. Anthony's College"
+    suffix, so titles prove nothing. Require institution-level founding/history
+    evidence in the chunk body itself: a founding verb applied to the college in
+    the same sentence (department "Estd." blurbs don't qualify), or an explicit
+    institutional-history heading/section.
+    """
     meta = meta or {}
     source_url = str(meta.get("source_url") or "").lower()
     filename = normalize_text(str(meta.get("filename") or ""))
-    haystack = normalize_text(
-        f"{doc} {meta.get('title', '')} {meta.get('section_title', '')} {source_url}"
+    body = normalize_text(
+        f"{doc} {meta.get('section_title', '')}"
     )
-    return (
-        "/college/history" in source_url
-        or "st anthony" in haystack
-        or "st anthony s college" in haystack
-        or ("about" in filename and "college" in haystack)
-    )
+    if "/college/history" in source_url or "/history" in source_url:
+        return True
+    if "about" in filename and "college" in body:
+        return True
+    if "about the college" in body or "history of the college" in body:
+        return True
+    return bool(_COLLEGE_FOUNDING_RE.search(body))
 
 
 # TODO: split

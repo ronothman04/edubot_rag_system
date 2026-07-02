@@ -939,6 +939,22 @@ def _ask_internal(
     answer, sources = resolve_answer_citations(answer, sources)
 
     answer = postprocess_answer(answer)
+    # The grounding prompt tells the model to reply with NOT_FOUND_MESSAGE *alone*
+    # when the context lacks the answer. Models sometimes append that sentinel to a
+    # partial attempt instead, producing a self-contradictory reply ("here is some
+    # info … I couldn't find this information"). Strip embedded sentinels; if no
+    # substantive text remains, restore the bare sentinel so the exact-match
+    # not-found routing below still fires.
+    _sentinel = NOT_FOUND_MESSAGE.strip()
+    if answer and _sentinel in answer and answer.strip() != _sentinel:
+        _stripped = answer.replace(_sentinel, "").strip()
+        answer = _stripped if len(_stripped) >= 40 else _sentinel
+    # Degenerate-output guard: a reply with no real content (e.g. a lone symbol
+    # produced by an adversarial or nonsense query) must never be shown as an
+    # answer; blank it so the standard no-answer routing below takes over.
+    if answer and len(re.sub(r"[^A-Za-z0-9]", "", answer)) < 4:
+        _log_pipeline("answer_guard", "BLOCKED — degenerate answer", raw=answer[:40])
+        answer = ""
     # Backstop: if the model still rendered a structurally-broken table (placeholder
     # headers, blank cells, collapsed columns) despite the grounding rules, degrade
     # it to the values actually present rather than show a fabricated grid. General;
