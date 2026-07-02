@@ -1190,13 +1190,19 @@ def apply_department_roster_authority(
     top_k: int,
 ) -> tuple[list[str], list[dict], list[float | None]]:
     """Prepend authoritative department roster/head chunks for staff queries."""
-    if not (is_staff_query(query) or is_head_query(query)):
+    # normalize_query singularizes some plurals ("departments" -> "department")
+    # but not others ("heads" stays "heads"), so gate on plural-tolerant word
+    # patterns rather than exact tokens.
+    nq = normalize_query(query)
+    wants_multi_department_heads = bool(
+        is_list_query(query)
+        and re.search(r"\bdepartments?\b", nq)
+        and (re.search(r"\bheads?\b", nq) or re.search(r"\bhods?\b", nq))
+    )
+    if not (is_staff_query(query) or is_head_query(query) or wants_multi_department_heads):
         return final_docs, final_metas, final_dists
 
     dept = extract_staff_department_from_query(query) or extract_department_from_query(query)
-    wants_multi_department_heads = is_list_query(query) and "departments" in normalize_query(query) and (
-        "heads" in normalize_query(query) or "hod" in normalize_query(query)
-    )
 
     try:
         from .bm25_index import get_all_documents_and_metas, load_bm25_index
@@ -1217,18 +1223,28 @@ def apply_department_roster_authority(
             continue
         if not metadata_matches_where_filter(meta, where_filter):
             continue
-        combined = normalize_text(
-            f"{meta.get('filename', '')} {meta.get('section_title', '')} {content_without_context_header(doc)}"
+        body = f"{meta.get('filename', '')} {meta.get('section_title', '')} {content_without_context_header(doc)}"
+        combined = normalize_text(body)
+        # Roster evidence markers carry punctuation ("Head :", "Head (UG)") that
+        # normalize_text strips, so they must be matched on the RAW lowercased
+        # text — matching them on the normalized text can never succeed and
+        # silently disables this whole arm. Department aliases stay on the
+        # normalized text (they are produced by the same normalizer).
+        raw = body.lower()
+        has_head_marker = bool(
+            re.search(r"\bhead\s*[:：]", raw)
+            or "head (ug)" in raw
+            or "director (pg)" in raw
         )
         if wants_multi_department_heads:
-            if combined.count("department of") < 2 or "head :" not in combined:
+            if combined.count("department of") < 2 or not has_head_marker:
                 continue
         else:
             if not dept_aliases or not any(alias in combined for alias in dept_aliases):
                 continue
-            if "head :" not in combined and "head (ug)" not in combined and "director (pg)" not in combined:
+            if not has_head_marker:
                 continue
-            if is_list_query(query) and "teaching staff" not in combined:
+            if is_list_query(query) and "teaching staff" not in raw:
                 continue
         key = candidate_dedupe_key(doc, meta)
         if key in seen:
@@ -1239,9 +1255,25 @@ def apply_department_roster_authority(
     if not matches:
         return final_docs, final_metas, final_dists
 
-    out_docs = [doc for doc, _meta, _dist in matches[:4]]
-    out_metas = [meta for _doc, meta, _dist in matches[:4]]
-    out_dists = [dist for _doc, _meta, dist in matches[:4]]
+    # Newest roster first, so if several documents carry qualifying rosters the
+    # current handbook outranks older ones. A full department-head listing spans
+    # several consecutive pages (~1k chars each), so the multi-department form
+    # needs them all — the single-department form only needs the page naming it.
+    def _roster_year(item: tuple[str, dict, float | None]) -> int:
+        try:
+            return int(str((item[1] or {}).get("document_year", "")).strip()[:4])
+        except Exception:
+            return 0
+
+    matches.sort(key=_roster_year, reverse=True)
+    roster_cap = 8 if wants_multi_department_heads else 4
+    out_docs = [doc for doc, _meta, _dist in matches[:roster_cap]]
+    # Flag the prepends (on meta COPIES — the originals belong to the shared
+    # BM25 in-memory index) so the answer stage can keep them ahead of the
+    # cross-encoder order: sparse "Head :" roster tables score near zero even
+    # when they are the authoritative answer.
+    out_metas = [dict(meta or {}, _roster_prepend=True) for _doc, meta, _dist in matches[:roster_cap]]
+    out_dists = [dist for _doc, _meta, dist in matches[:roster_cap]]
     seen_keys = {candidate_dedupe_key(doc, meta) for doc, meta in zip(out_docs, out_metas)}
     for doc, meta, dist in zip(final_docs, final_metas, final_dists):
         key = candidate_dedupe_key(doc, meta)

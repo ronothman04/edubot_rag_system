@@ -599,6 +599,22 @@ def _ask_internal(
                     used_history=used_history,
                 )
 
+        # Authority-prepended roster chunks (sparse "Head :" staff tables) score
+        # near zero with the cross-encoder even when they ARE the authoritative
+        # answer, so a plain score ordering buries them below incidental prose
+        # and the context budget fills up before reaching them. Keep them at the
+        # front in their prepend order; everything else stays in score order.
+        # (Runs after the confidence gates, which must see the true top score.)
+        _prepend_idx = [i for i, m in enumerate(reranked_metas) if (m or {}).get("_roster_prepend")]
+        if _prepend_idx:
+            _rest_idx = [i for i in range(len(reranked_metas)) if i not in set(_prepend_idx)]
+            _order = _prepend_idx + _rest_idx
+            reranked_docs = [reranked_docs[i] for i in _order]
+            reranked_metas = [reranked_metas[i] for i in _order]
+            reranked_dists = [reranked_dists[i] for i in _order]
+            if reranker_scores:
+                reranker_scores = [reranker_scores[i] for i in _order]
+
         # Use reranked results going forward
         docs, metas, dists = reranked_docs[:_top_k], reranked_metas[:_top_k], reranked_dists[:_top_k]
         if 'reranker_scores' in locals() and reranker_scores is not None:
